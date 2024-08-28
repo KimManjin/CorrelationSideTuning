@@ -1,0 +1,6 @@
+Recognition/clip_pretrain
+__pycache__
+Recognition/exp_onehot/*
+Recognition/exp/*
+Recognition/wandb
+.vscode
