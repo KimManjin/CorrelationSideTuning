@@ -500,9 +500,9 @@ def train(model, train_loader, optimizer, criterion, scaler,
                              top1=top1,
                              loss=losses, lr=optimizer.param_groups[-1]['lr'])))  # TODO
             if dist.get_rank() == 0 and config.wandb.use_wandb and not args.debug:
-                wandb.log({"train/loss": losses.val,
-                        "train/top1": top1.val,
-                        "train/top5": top5.val,
+                wandb.log({"train/loss": losses.avg,
+                        "train/top1": top1.avg,
+                        "train/top5": top5.avg,
                         "train/lr": optimizer.param_groups[-1]['lr']},
                         step=cur_iter)
     return cur_iter
@@ -532,12 +532,12 @@ def validate(epoch, val_loader, device, model, config, logger, cur_iter=0):
                      'Prec@1 {top1.val:.3f} ({top1.avg:.3f})\t'
                      'Prec@5 {top5.val:.3f} ({top5.avg:.3f})'.format(
                          i, len(val_loader), top1=top1, top5=top5)))
-            if dist.get_rank() == 0 and config.wandb.use_wandb and not args.debug:
-                wandb.log({"val/top1": top1.val,
-                            "val/top5": top5.val},
-                            step=cur_iter)
     logger.info(('Testing Results: Prec@1 {top1.avg:.3f} Prec@5 {top5.avg:.3f}'
         .format(top1=top1, top5=top5)))
+    if dist.get_rank() == 0 and config.wandb.use_wandb and not args.debug:
+        wandb.log({"val/top1": top1.avg,
+                    "val/top5": top5.avg},
+                    step=cur_iter)
     return top1.avg
 
 
