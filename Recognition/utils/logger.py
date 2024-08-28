@@ -40,7 +40,7 @@ def setup_logger(
     Returns:
         logging.Logger: a logger
     """
-    logger = logging.getLogger(name)
+    logger = logging.getLogger()
     logger.setLevel(logging.DEBUG)
     logger.propagate = False
 
@@ -48,7 +48,8 @@ def setup_logger(
         abbrev_name = name
 
     plain_formatter = logging.Formatter(
-        "[%(asctime)s] %(name)s %(levelname)s: %(message)s", datefmt="%m/%d %H:%M:%S"
+        "[%(asctime)s][%(levelname)s] %(filename)s: %(lineno)4d: %(message)s",
+        datefmt="%m/%d %H:%M:%S",
     )
     # stdout logging: master only
     if distributed_rank == 0:
@@ -56,7 +57,7 @@ def setup_logger(
         ch.setLevel(logging.DEBUG)
         if color:
             formatter = _ColorfulFormatter(
-                colored("[%(asctime)s %(name)s]: ", "green") + "%(message)s",
+                colored("[%(asctime)s][%(levelname)s] %(filename)s: %(lineno)4d: ", "green") + "%(message)s",
                 datefmt="%m/%d %H:%M:%S",
                 root_name=name,
                 abbrev_name=str(abbrev_name),
@@ -82,6 +83,15 @@ def setup_logger(
 
     return logger
 
+
+def get_logger(name):
+    """
+    Retrieve the logger with the specified name or, if name is None, return a
+    logger which is the root logger of the hierarchy.
+    Args:
+        name (string): name of the logger.
+    """
+    return logging.getLogger(name)
 
 # cache the opened file object, so that different calls to `setup_logger`
 # with the same file name can safely write to the same file.

@@ -10,6 +10,8 @@ from torch import nn
 import numpy as np
 import json
 import math
+from utils.logger import get_logger
+logger = get_logger(__name__)
 
 def init_distributed_mode(args):
     """ init for distribute mode """

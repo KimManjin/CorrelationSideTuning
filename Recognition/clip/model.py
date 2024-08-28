@@ -8,6 +8,9 @@ from torch import nn
 import torch.utils.checkpoint as checkpoint
 from einops import rearrange
 from random import sample
+from utils.logger import setup_logger, get_logger
+
+logger = get_logger(__name__)
 
 def conv_3xnxn_std(inp, oup, kernel_size=3, stride=3, groups=1):
     return nn.Conv3d(inp, oup, (3, kernel_size, kernel_size), (1, stride, stride), (1, 0, 0), groups=groups)
@@ -377,7 +380,7 @@ class Transformer(nn.Module):
         super().__init__()
         if dropout is None:
             dropout = [0.0 for i in range(layers)] 
-        print('dropout used:{}'.format(dropout))
+        logger.info('dropout used:{}'.format(dropout))
         self.width = width
         self.layers = layers
         self.T = T
@@ -442,10 +445,10 @@ class VisualTransformer(nn.Module):
         self.joint = joint
         self.T = T
         if joint:
-            print('=====using space-time attention====')
+            logger.info('=====using space-time attention====')
             self.time_embedding = nn.Parameter(scale * torch.randn(T, width))  # pos emb
         if emb_dropout > 0:
-            print('emb_dropout:{}'.format(emb_dropout))
+            logger.info('emb_dropout:{}'.format(emb_dropout))
 
         self.side_dim = side_dim
         ## Attention Blocks
@@ -461,7 +464,6 @@ class VisualTransformer(nn.Module):
         nn.init.zeros_(self.side_post_bn.bias)
 
     def forward(self, x: torch.Tensor):
-        from einops import rearrange
         x_side = rearrange(x, '(b t) c h w -> b c t h w', t=self.T)
 
         x = self.conv1(x)  # shape = [*, width, grid, grid]
@@ -477,7 +479,6 @@ class VisualTransformer(nn.Module):
         x = x + self.positional_embedding.to(x.dtype)
         
         if self.joint:
-            from einops import rearrange
             B = x.shape[0] // self.T
             cls_tokens = x[:B, 0, :].unsqueeze(1)  # only one cls_token
             x = x[:,1:]
@@ -543,7 +544,7 @@ class CLIP(nn.Module):
                 width=vision_width
             )
             if tm:
-                print('=========using Temporal Shift Module==========')
+                logger.info('=========using Temporal Shift Module==========')
                 from modules.temporal_modeling import make_temporal_shift
                 make_temporal_shift(self.visual, T)
 
@@ -562,25 +563,25 @@ class CLIP(nn.Module):
                 side_dim=side_dim
             )
             if tm == 'tsm':
-                print('=========using Temporal Shift Module==========')
+                logger.info('=========using Temporal Shift Module==========')
                 from modules.temporal_modeling import make_temporal_shift_vit
                 make_temporal_shift_vit(self.visual, T)
             elif tm == 'tokenshift':
-                print('=========using TokenShift =========={} layers'.format(vision_layers))
+                logger.info('=========using TokenShift =========={} layers'.format(vision_layers))
                 from modules.temporal_modeling import make_tokenshift
                 make_tokenshift(
                     self.visual, T, n_div=4,
                     locations_list=[x for x in range(vision_layers)]
                 )
             elif tm == "tokent1d":
-                print('=========using TokenT1D ==========')
+                logger.info('=========using TokenT1D ==========')
                 from modules.temporal_modeling import make_tokenT1D
                 make_tokenT1D(
                     self.visual, T, n_div=4,
                     locations_list=[x for x in range(vision_layers)]
                 )                
             elif tm == 'dividedST':
-                print('=========using DividedST ==========')
+                logger.info('=========using DividedST ==========')
                 from modules.temporal_modeling import make_DividedST
                 make_DividedST(
                     self.visual, T, vision_heads, emb_dropout, None,
@@ -588,7 +589,7 @@ class CLIP(nn.Module):
                 )
 
             elif tm == 'localuni':
-                print('=========using LocalUni ==========')
+                logger.info('=========using LocalUni ==========')
                 from modules.temporal_modeling import make_LocalUni
                 if vision_layers == 12:
                     start = int(vision_layers * 1/3)
@@ -599,7 +600,7 @@ class CLIP(nn.Module):
                     locations_list=[x for x in range(start, vision_layers)]
                 )                
             elif tm == 't1d':
-                print('=========using T1D ==========')
+                logger.info('=========using T1D ==========')
                 from modules.temporal_modeling import make_T1D4VIT
                 if vision_layers == 12:
                     start = int(vision_layers * 1/3)
@@ -611,7 +612,7 @@ class CLIP(nn.Module):
                 )    
 
             elif tm == 'atm':
-                print('=========using ATM ==========')
+                logger.info('=========using ATM ==========')
                 from modules.ATM import make_ATM
                 if vision_layers == 12:
                     start = 10 # int(vision_layers * 1/3)
@@ -796,7 +797,7 @@ def build_model(state_dict: dict, tm=None,T=8,dropout=0., joint=False,emb_dropou
 
     convert_weights(model)
     if pretrain:
-        print('loading clip pretrained model!')
+        logger.info('loading clip pretrained model!')
         if joint and tm != "dividedST":  #or emb_dropout>0 or dropout>0
             model.load_state_dict(state_dict,strict=False)
         else:
@@ -829,7 +830,7 @@ def build_model(state_dict: dict, tm=None,T=8,dropout=0., joint=False,emb_dropou
             else:
                 model.load_state_dict(state_dict, strict=False)
     else:
-        print('not using full clip pretrained model, only visual!')
+        logger.info('not using full clip pretrained model, only visual!')
         
         for k in list(state_dict.keys()):
             if not k.find("visual")>-1: 
