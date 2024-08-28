@@ -8,6 +8,8 @@ from torch import nn
 import torch.utils.checkpoint as checkpoint
 from einops import rearrange
 from random import sample
+from modules.selfy import SELFYBlock
+
 from utils.logger import setup_logger, get_logger
 
 logger = get_logger(__name__)
@@ -232,8 +234,20 @@ class CMlp(nn.Module):
         return x
 
 class AttnCBlock(nn.Module):
-    def __init__(self, dim, side_dim, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
-                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, kernel_size=5, T=8):
+    def __init__(self,
+                 dim,
+                 side_dim,
+                 mlp_ratio=4.,
+                 qkv_bias=False,
+                 qk_scale=None,
+                 drop=0.,
+                 attn_drop=0.,
+                 drop_path=0.,
+                 act_layer=nn.GELU,
+                 norm_layer=nn.LayerNorm,
+                 kernel_size=5,
+                 T=8
+                 ):
         super().__init__()
         self.bn_1 = bn_3d(dim)
         self.conv = nn.Sequential(*[
@@ -376,7 +390,20 @@ class ResidualAttentionBlock(nn.Module):
         return x
      
 class Transformer(nn.Module):
-    def __init__(self, width: int, layers: int, heads: int, attn_mask: torch.Tensor = None, dropout=None, side_dim=384, T=8, patch_num=49):
+    def __init__(self,
+                 width: int,
+                 layers: int,
+                 heads: int,
+                 attn_mask: torch.Tensor = None,
+                 dropout=None,
+                 side_dim=384,
+                 T=8,
+                 patch_num=49,
+                 corr_func: str = "cosine",
+                 corr_layer_index: list = [],
+                 corr_window: list = [5, 9, 9],
+                 corr_ext_chnls: list = [4, 16, 64, 64],
+                 corr_int_chnls: list = [64, 64, 128]):
         super().__init__()
         if dropout is None:
             dropout = [0.0 for i in range(layers)] 
@@ -409,10 +436,27 @@ class Transformer(nn.Module):
         self.side_transformer = nn.ModuleList(self.side_transformer)
         side_scale = self.side_dim ** -0.5
         self.side_spatial_position_embeddings = nn.Parameter(side_scale * torch.randn((patch_num, self.side_dim)))
+        
+        # SELFY block
+        self.corr_layer_index = corr_layer_index
+        self.selfy_layers = []
+        self.side_corr_linears = []
+        for i in self.corr_layer_index:
+            self.selfy_layers.append(SELFYBlock(num_segments=T,
+                                window=corr_window,
+                                ext_chnls=corr_ext_chnls,
+                                int_chnls=corr_int_chnls,
+                                corr_func=corr_func
+                                ))
+            self.side_corr_linears.append(nn.Linear(corr_int_chnls[-1], self.side_dim))
+        self.selfy_layers = nn.ModuleList(self.selfy_layers)
+        self.side_corr_linears = nn.ModuleList(self.side_corr_linears)
+        # init weights
         nn.init.normal_(self.side_spatial_position_embeddings, std=0.01)
 
     def forward(self, x: torch.Tensor, x_side: torch.Tensor, side_spatial_position_embeddings: torch.Tensor=None):
         k = 0
+        l = 0
         h = int(x.shape[0] ** 0.5)
         for i in range(len(self.resblocks)):
             x = self.resblocks[i](x)
@@ -423,14 +467,37 @@ class Transformer(nn.Module):
             xs2xt = self.side_linears[k](self.side_lns[k](x))
             x_token = xs2xt[:1, :, :]
             xs2xt = xs2xt[1:, :, :]
-            x_side = 0.5 * x_side + 0.5 * xs2xt
+            x_side = 0.5 * x_side + 0.5 * xs2xt 
+            # SELFY block
+            if i in self.corr_layer_index:
+                x_corr = self.selfy_layers[l](x)
+                x_corr = self.side_corr_linears[l](x_corr)
+                x_side = x_side + x_corr
+                l += 1
             x_side = self.side_transformer[k](x_side, x_token, self.side_spatial_position_embeddings, i)
             k += 1
         return x_side
 
 
 class VisualTransformer(nn.Module):
-    def __init__(self, input_resolution: int, patch_size: int, width: int, layers: int, heads: int, output_dim: int,dropout = None,joint=False, emb_dropout = 0., T=8, side_dim=384):
+    def __init__(self,
+                 input_resolution: int,
+                 patch_size: int,
+                 width: int,
+                 layers: int,
+                 heads: int,
+                 output_dim: int,
+                 dropout = None,
+                 joint=False,
+                 emb_dropout: float = 0.,
+                 T: int = 8,
+                 side_dim: int = 384,
+                 corr_func: str = "cosine",
+                 corr_layer_index: list = [],
+                 corr_window: list = [5, 9, 9],
+                 corr_ext_chnls: list = [4, 16, 64, 64],
+                 corr_int_chnls: list = [64, 64, 128]
+                 ):
         super().__init__()
         self.input_resolution = input_resolution
         self.output_dim = output_dim
@@ -452,7 +519,19 @@ class VisualTransformer(nn.Module):
 
         self.side_dim = side_dim
         ## Attention Blocks
-        self.transformer = Transformer(width, layers, heads, dropout=dropout, side_dim=side_dim, T=T, patch_num=(input_resolution // patch_size) ** 2)
+        self.transformer = Transformer(width,
+                                       layers,
+                                       heads,
+                                       dropout=dropout,
+                                       side_dim=side_dim,
+                                       T=T,
+                                       patch_num=(input_resolution // patch_size) ** 2,
+                                       corr_layer_index=corr_layer_index,
+                                       corr_window=corr_window,
+                                       corr_ext_chnls=corr_ext_chnls,
+                                       corr_int_chnls=corr_int_chnls,
+                                       corr_func=corr_func
+                                       )
 
         side_scale = self.side_dim ** -0.5
         self.side_post_bn = bn_3d(self.side_dim)
@@ -522,7 +601,16 @@ class CLIP(nn.Module):
                  transformer_heads: int,
                  transformer_layers: int,
                  joint=False,
-                 tm=None, T=8,dropout = 0., emb_dropout = 0.,side_dim = 384,
+                 tm=None,
+                 T: int = 8,
+                 dropout: float = 0.,
+                 emb_dropout: float = 0.,
+                 side_dim: int = 384,
+                 corr_func: str = "cosine",
+                 corr_layer_index: list = [],
+                 corr_window: list = [5, 9, 9],
+                 corr_ext_chnls: list = [4, 16, 64, 64],
+                 corr_int_chnls: list = [64, 64, 128]
                  ):
         super().__init__()
 
@@ -560,7 +648,12 @@ class CLIP(nn.Module):
                 joint=joint,dropout=dpr,
                 emb_dropout=emb_dropout,
                 T=T,
-                side_dim=side_dim
+                side_dim=side_dim,
+                corr_layer_index=corr_layer_index,
+                corr_window=corr_window,
+                corr_ext_chnls=corr_ext_chnls,
+                corr_int_chnls=corr_int_chnls,
+                corr_func=corr_func
             )
             if tm == 'tsm':
                 logger.info('=========using Temporal Shift Module==========')
@@ -748,7 +841,20 @@ def convert_weights(model: nn.Module):
     model.apply(_convert_weights_to_fp16)
 
 
-def build_model(state_dict: dict, tm=None,T=8,dropout=0., joint=False,emb_dropout=0.,pretrain=True, side_dim=384):
+def build_model(state_dict: dict,
+                tm=None,
+                T=8,
+                dropout=0.,
+                joint=False,
+                emb_dropout=0.,
+                pretrain=True,
+                side_dim=384,
+                corr_func: str = "cosine",
+                corr_layer_index: list = [],
+                corr_window: list = [5, 9, 9],
+                corr_ext_chnls: list = [4, 16, 64, 64],
+                corr_int_chnls: list = [64, 64, 128]
+                ):
     vit = "visual.proj" in state_dict
 
     if vit:
@@ -778,12 +884,18 @@ def build_model(state_dict: dict, tm=None,T=8,dropout=0., joint=False,emb_dropou
         image_resolution, vision_layers, vision_width, vision_patch_size,
         context_length, vocab_size, transformer_width, transformer_heads, transformer_layers,
         tm=tm, T=T, joint=joint,
-        dropout=dropout, emb_dropout=emb_dropout,side_dim=side_dim
+        dropout=dropout, emb_dropout=emb_dropout,side_dim=side_dim,
+        corr_layer_index=corr_layer_index,
+        corr_window=corr_window,
+        corr_ext_chnls=corr_ext_chnls,
+        corr_int_chnls=corr_int_chnls,
+        corr_func=corr_func
     )
 
     for key in ["input_resolution", "context_length", "vocab_size"]:
         if key in state_dict:
             del state_dict[key]
+    # tm is set to False by default.
     if tm == True or tm in ["tsm", "tokenshift"]:
         # old dict for new model, rename some keys
         model_dict = model.state_dict()

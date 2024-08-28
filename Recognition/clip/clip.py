@@ -95,7 +95,16 @@ def load(
         name: str,
         device: Union[str, torch.device] = "cuda" if torch.cuda.is_available() else "cpu", 
         jit=True, 
-        internal_modeling=False, joint_st=False, T=8, dropout=0., side_dim=384,
+        internal_modeling=False,
+        joint_st=False,
+        T=8,
+        dropout=0.,
+        side_dim=384,
+        corr_func: str = "cosine",
+        corr_layer_index: list = [],
+        corr_window: list = [5, 9, 9],
+        corr_ext_chnls: list = [4, 16, 64, 64],
+        corr_int_chnls: list = [64, 64, 128],
         emb_dropout=0., 
         pretrain=True,
         download_root: str = None):
@@ -142,7 +151,20 @@ def load(
         state_dict = torch.load(model_path, map_location="cpu")
 
     if not jit:
-        model = build_model(state_dict or model.state_dict(), joint=joint_st, tm=internal_modeling, T=T, dropout=dropout, emb_dropout=emb_dropout, pretrain=pretrain, side_dim=side_dim).to(device)
+        model = build_model(state_dict or model.state_dict(),
+                            joint=joint_st,
+                            tm=internal_modeling,
+                            T=T,
+                            dropout=dropout,
+                            emb_dropout=emb_dropout,
+                            pretrain=pretrain,
+                            side_dim=side_dim,
+                            corr_func=corr_func,
+                            corr_layer_index=corr_layer_index,
+                            corr_window=corr_window,
+                            corr_ext_chnls=corr_ext_chnls,
+                            corr_int_chnls=corr_int_chnls
+                            ).to(device)
         if str(device) == "cpu":
             model.float()        
         return model, model.state_dict()

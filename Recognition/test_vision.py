@@ -112,6 +112,7 @@ def main(args):
     # get fp16 model and weight
     model_name = config.network.arch
     if model_name in ["EVA02-CLIP-L-14", "EVA02-CLIP-L-14-336", "EVA02-CLIP-bigE-14", "EVA02-CLIP-bigE-14-plus"]:
+        # TODO: add SELFY model
         # get evaclip model start ########
         weight_path = {
             "EVA02-CLIP-L-14": './clip-pretrain/EVA02_CLIP_L_psz14_s4B.pt',
@@ -136,6 +137,11 @@ def main(args):
             pretrain=config.network.init,
             joint_st = config.network.joint_st,
             side_dim=config.network.side_dim,
+            corr_layer_index=config.network.corr_layer_index,
+            corr_func=config.network.corr_func,
+            corr_window=config.network.corr_window,
+            corr_ext_chnls=config.network.corr_ext_chnls,
+            corr_int_chnls=config.network.corr_int_chnls,
             download_root='./clip_pretrain') # Must set jit=False for training  ViT-B/32
 
     video_head = video_header(
