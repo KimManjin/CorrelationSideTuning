@@ -1,7 +1,8 @@
 from torch.utils.data._utils.collate import default_collate
 from datasets.transforms import *
 from datasets.random_erasing import RandomErasing
-from RandAugment import RandAugment
+# from RandAugment import RandAugment
+from datasets.rand_augment import RandAugment
 
 
 class GroupTransform(object):
