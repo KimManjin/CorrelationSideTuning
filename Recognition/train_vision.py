@@ -21,7 +21,7 @@ from pathlib import Path
 import yaml
 import pprint
 from dotmap import DotMap
-
+import wandb
 import datetime
 import shutil
 from contextlib import suppress
@@ -79,7 +79,9 @@ def update_dict(dict):
 def get_parser():
     parser = argparse.ArgumentParser('CLIP4Time training and evaluation script for video classification', add_help=False)
     parser.add_argument('--config', '-cfg', type=str, default='clip.yaml', help='global config file')
-    parser.add_argument('--log_time', default='001')
+    parser.add_argument('--exp_name', default='default', type=str, help='experiment name')
+    parser.add_argument('--root_dir', default='./exp', type=str, help='root directory for storing the experiment data')
+    parser.add_argument('--debug', action='store_true', default=False, help='debug mode')
     parser.add_argument('--dist_url', default='env://',
                         help='url used to set up distributed training')
     parser.add_argument('--world_size', default=1, type=int,
@@ -110,9 +112,13 @@ def main(args):
 
     with open(args.config, 'r') as f:
         config = yaml.load(f, Loader=yaml.FullLoader)
-    working_dir = os.path.join('./exp_onehot', config['data']['dataset'], config['network']['arch'], args.log_time)
+    config = DotMap(config)
 
-    if 'something' in config['data']['dataset']:
+    # set up working directory
+    root_dir = args.root_dir
+    working_dir = os.path.join(root_dir, args.exp_name)
+
+    if 'something' in config.data.dataset:
         from datasets.sth import Video_dataset
     else:
         from datasets.kinetics import Video_dataset
@@ -127,10 +133,21 @@ def main(args):
             shutil.copy('clip/model.py', working_dir)
 
 
-    # build logger, print env and config
+    # build logger. If True, use Wandb to logging
     logger = setup_logger(output=working_dir,
                           distributed_rank=dist.get_rank(),
-                          name=f'Text4Vis')
+                          name=__name__)
+    config.wandb.group_name = args.exp_name
+    config.wandb.exp_name = os.path.join(args.exp_name, 'train')
+    if dist.get_rank() == 0 and config.wandb.use_wandb and not args.debug:
+        wandb.login(key=config.wandb.key)
+        wandb.init(project=config.wandb.project_name,
+                   name=config.wandb.exp_name,
+                   group=config.wandb.group_name,
+                   entity=config.wandb.entity,
+                   job_type="train")
+
+    # print env and config    
     logger.info("------------------------------------")
     logger.info("Environment Versions:")
     logger.info("- Python: {}".format(sys.version))
@@ -144,7 +161,6 @@ def main(args):
 
 
 
-    config = DotMap(config)
 
     device = "cpu"
     if torch.cuda.is_available():        
@@ -258,11 +274,12 @@ def main(args):
         for name, param in model_onehot.named_parameters():
             if 'visual' in name and'side' not in name and 'ln_post' not in name and 'visual.proj' not in name or 'logit_scale' in name:
                 param.requires_grad = False
-                print(name, 'False')
+                logger.info(name + ' False')
             else:
                 param.requires_grad = True
-                print(name, 'True')
+                logger.info(name +' True')
             
+    logger.info(model_onehot)
 
     ############# criterion #############
     mixup_fn = None
@@ -366,13 +383,13 @@ def main(args):
     for epoch in range(start_epoch, config.solver.epochs):
         if args.distributed:
             train_loader.sampler.set_epoch(epoch)        
-        train(model_onehot, train_loader, optimizer, criterion, scaler,
+        cur_iter = train(model_onehot, train_loader, optimizer, criterion, scaler,
               epoch, device, lr_scheduler, config, mixup_fn, logger)
 
         if (epoch+1) % config.logging.eval_freq == 0:  # and epoch>0
             if config.logging.skip_epoch is not None and epoch in config.logging.skip_epoch:
                 continue
-            prec1 = validate(epoch, val_loader, device, model_onehot, config, logger)
+            prec1 = validate(epoch, val_loader, device, model_onehot, config, logger, cur_iter)
 
             if dist.get_rank() == 0:
                 is_best = prec1 >= best_prec1
@@ -393,6 +410,7 @@ def train(model, train_loader, optimizer, criterion, scaler,
     data_time = AverageMeter()
     losses = AverageMeter()
     top1 = AverageMeter()
+    top5 = AverageMeter()
 
     model.train()
     autocast = torch.cuda.amp.autocast if args.precision == 'amp' else suppress
@@ -451,8 +469,9 @@ def train(model, train_loader, optimizer, criterion, scaler,
                 optimizer.zero_grad()  # reset gradient
 
 
-        # prec1, prec5 = accuracy(logits, list_id, topk=(1, 5))
-        # top1.update(prec1.item(), logits.size(0))
+        prec1, prec5 = accuracy(logits, list_id, topk=(1, 5))
+        top1.update(prec1.item(), logits.size(0))
+        top5.update(prec5.item(), logits.size(0))
         losses.update(loss.item(), logits.size(0))
 
 
@@ -469,15 +488,21 @@ def train(model, train_loader, optimizer, criterion, scaler,
             logger.info(('Epoch: [{0}][{1}/{2}], lr: {lr:.2e}, eta: {3}\t'
                          'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                          'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
-                        #  'Prec@1 {top1.val:.3f} ({top1.avg:.3f})\t'
+                         'Prec@1 {top1.val:.3f} ({top1.avg:.3f})\t'
                          'Loss {loss.val:.4f} ({loss.avg:.4f})'.format(
                              epoch, i, len(train_loader), eta_sec, batch_time=batch_time, data_time=data_time, 
-                            #  top1=top1,
+                             top1=top1,
                              loss=losses, lr=optimizer.param_groups[-1]['lr'])))  # TODO
+            if dist.get_rank() == 0 and config.wandb.use_wandb and not args.debug:
+                wandb.log({"train/loss": losses.val,
+                        "train/top1": top1.val,
+                        "train/top5": top5.val,
+                        "train/lr": optimizer.param_groups[-1]['lr']},
+                        step=cur_iter)
+    return cur_iter
 
 
-
-def validate(epoch, val_loader, device, model, config, logger):
+def validate(epoch, val_loader, device, model, config, logger, cur_iter=0):
     top1 = AverageMeter()
     top5 = AverageMeter()
     model.eval()
@@ -501,7 +526,10 @@ def validate(epoch, val_loader, device, model, config, logger):
                      'Prec@1 {top1.val:.3f} ({top1.avg:.3f})\t'
                      'Prec@5 {top5.val:.3f} ({top5.avg:.3f})'.format(
                          i, len(val_loader), top1=top1, top5=top5)))
-
+            if dist.get_rank() == 0 and config.wandb.use_wandb and not args.debug:
+                wandb.log({"val/top1": top1.val,
+                            "val/top5": top5.val},
+                            step=cur_iter)
     logger.info(('Testing Results: Prec@1 {top1.avg:.3f} Prec@5 {top5.avg:.3f}'
         .format(top1=top1, top5=top5)))
     return top1.avg

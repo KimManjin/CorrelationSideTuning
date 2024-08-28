@@ -10,10 +10,12 @@ import torch.backends.cudnn as cudnn
 import torchvision
 import time
 from utils.utils import init_distributed_mode, AverageMeter, reduce_tensor, accuracy
+from utils.logger import setup_logger
 import clip
 
 import yaml
 from dotmap import DotMap
+import wandb
 
 from datasets.transforms import GroupScale, GroupCenterCrop, Stack, ToTorchFormatTensor, GroupNormalize, GroupOverSample, GroupFullResSample
 from modules.video_clip import video_header
@@ -43,6 +45,8 @@ def get_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str, help='global config file')
     parser.add_argument('--weights', type=str, default=None)
+    parser.add_argument('--root_dir', default='./exp', type=str, help='root directory for storing the experiment data')
+    parser.add_argument('--debug', action='store_true', default=False, help='debug mode')
     parser.add_argument('--dist_url', default='env://',
                         help='url used to set up distributed training')
     parser.add_argument('--world_size', default=1, type=int,
@@ -82,6 +86,23 @@ def main(args):
         from datasets.kinetics import Video_dataset
 
     config = DotMap(config)
+
+    # set up working directory
+    working_dir = "/".join(args.weights.split('/')[:-1])
+    exp_name = args.weights.split('/')[-2]
+    # build logger. If True, use Wandb to logging
+    logger = setup_logger(output=working_dir,
+                          distributed_rank=dist.get_rank(),
+                          name=__name__)
+    config.wandb.group_name = exp_name
+    config.wandb.exp_name = os.path.join(exp_name, 'test')
+    if dist.get_rank() == 0 and config.wandb.use_wandb and not args.debug:
+        wandb.login(key=config.wandb.key)
+        wandb.init(project=config.wandb.project_name,
+                   name=config.wandb.exp_name,
+                   group=config.wandb.group_name,
+                   entity=config.wandb.entity,
+                   job_type="test")
 
     device = "cpu"
     if torch.cuda.is_available():
@@ -190,11 +211,12 @@ def main(args):
 
 
     model_full = VideoCLIP(model, video_head, config)
+    logger.info(model_full)
 
     if os.path.isfile(args.weights):
         checkpoint = torch.load(args.weights, map_location='cpu')
         if dist.get_rank() == 0:
-            print('load model: epoch {}'.format(checkpoint['epoch']))
+            logger.info('load model: epoch {}'.format(checkpoint['epoch']))
 
         model_full.load_state_dict(update_dict(checkpoint['model_state_dict']))
         del checkpoint
@@ -204,13 +226,13 @@ def main(args):
 
     prec1 = validate(
         val_loader, device, 
-        model_full, config, args.test_crops, args.test_clips)
+        model_full, config, args.test_crops, args.test_clips, logger=logger)
     
     return
 
 
 
-def validate(val_loader, device, model, config, test_crops, test_clips):
+def validate(val_loader, device, model, config, test_crops, test_clips, logger=None):
     top1 = AverageMeter()
     top5 = AverageMeter()
     model.eval()
@@ -247,7 +269,7 @@ def validate(val_loader, device, model, config, test_crops, test_clips):
     
             if i % config.logging.print_freq == 0 and dist.get_rank() == 0:
                 runtime = float(cnt_time) / (i + 1) / (batch_size * dist.get_world_size())
-                print(
+                logger.info(
                     ('Test: [{0}/{1}], average {runtime:.4f} sec/video \t'
                      'Prec@1 {top1.val:.3f} ({top1.avg:.3f})\t'
                      'Prec@5 {top5.val:.3f} ({top5.avg:.3f})'.format(
@@ -255,9 +277,10 @@ def validate(val_loader, device, model, config, test_crops, test_clips):
 
 
     if dist.get_rank() == 0:
-        print('-----Evaluation is finished------')
-        print('Overall Prec@1 {:.03f}% Prec@5 {:.03f}%'.format(top1.avg, top5.avg))
-    
+        logger.info('-----Evaluation is finished------')
+        logger.info('Overall Prec@1 {:.03f}% Prec@5 {:.03f}%'.format(top1.avg, top5.avg))
+        if config.wandb.use_wandb and not args.debug:
+            wandb.log({"test/top1": top1.avg, "test/top5": top5.avg})
     return top1.avg
 
 
