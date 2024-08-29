@@ -286,7 +286,7 @@ def validate(val_loader, device, model, config, test_crops, test_clips, logger=N
         logger.info('-----Evaluation is finished------')
         logger.info('Overall Prec@1 {:.03f}% Prec@5 {:.03f}%'.format(top1.avg, top5.avg))
         if config.wandb.use_wandb and not args.debug:
-            wandb.log({"test/top1": top1.avg, "test/top5": top5.avg})
+            wandb.log({"test/top1": top1.avg, "test/top5": top5.avg}, step=0)
     return top1.avg
 
 
