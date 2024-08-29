@@ -43,4 +43,4 @@ done
 # OMP_NUM_THREADS=${num_threads} \
 CUDA_VISIBLE_DEVICES=${gpus} \
 python -m torch.distributed.launch --master_port=${port} --nproc_per_node=${n_gpus} \
-          test_vision.py --config ${config} --weights ${weight} ${@:4}
+          test_vision.py --config ${config} --weights ${weight} --test_crops 3 --test_clips 2
