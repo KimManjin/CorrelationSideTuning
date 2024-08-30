@@ -309,7 +309,7 @@ class AttnCBlock(nn.Module):
         out = rearrange(out, 'n b t d -> n (b t) d')
         return out
 
-    def forward(self, x, x_token=None, side_position_embeddings=None, layer_id=None, use_ckpt=False):
+    def forward(self, x, x_token=None, side_position_embeddings=None, use_ckpt=False):
         n, bt, d = x.size()
         h = int(x.shape[0] ** 0.5)
         x = rearrange(x, '(h w) (b t) d -> b d t h w', h=h, t=self.T)
@@ -396,6 +396,34 @@ class Transformer(nn.Module):
                  heads: int,
                  attn_mask: torch.Tensor = None,
                  dropout=None,
+                 ):
+        super().__init__()
+        if dropout is None:
+            dropout = [0.0 for i in range(layers)] 
+        logger.info('dropout used:{}'.format(dropout))
+        self.width = width
+        self.layers = layers
+        self.resblocks = []
+        for i in range(layers):
+            self.resblocks.append(ResidualAttentionBlock(width, heads, attn_mask, dropout=dropout[i]))
+        self.resblocks = nn.ModuleList(self.resblocks)
+        
+    def forward(self, x: torch.tensor):
+        act = []
+        for i in range(len(self.resblocks)):
+            x = self.resblocks[i](x)
+            act.append(x)
+        act = torch.stack(act, dim=0)
+        return x, act
+
+
+class SideNetwork(nn.Module):
+    def __init__(self,
+                 width: int,
+                 layers: int,
+                 heads: int,
+                 attn_mask: torch.Tensor = None,
+                 dropout=None,
                  side_dim=384,
                  T=8,
                  patch_num=49,
@@ -403,40 +431,38 @@ class Transformer(nn.Module):
                  corr_layer_index: list = [],
                  corr_window: list = [5, 9, 9],
                  corr_ext_chnls: list = [4, 16, 64, 64],
-                 corr_int_chnls: list = [64, 64, 128]):
+                 corr_int_chnls: list = [64, 64, 128]
+                 ):
         super().__init__()
         if dropout is None:
             dropout = [0.0 for i in range(layers)] 
         logger.info('dropout used:{}'.format(dropout))
+
         self.width = width
         self.layers = layers
         self.T = T
-        
+
         self.resblocks = []
-        self.side_transformer = []
-        self.side_linears = []
-        self.side_lns = []
+        self.adaptation = []
+        self.lns_pre = []
         self.drop_layer_mode = 'fix random' # random or fix or False or fix random
         self.side_start_layer = 0
         if self.drop_layer_mode == 'interval':
-            self.drop_layer = [i for i in range(0, layers, 2)]
+            self.drop_layers = [i for i in range(0, layers, 2)]
         else:
-            self.drop_layer = [i for i in range(self.side_start_layer)]
+            self.drop_layers = [i for i in range(self.side_start_layer)]
+        self.side_layers = [l for l in range(self.layers) if l not in self.drop_layers]
         self.side_dim = side_dim
         self.temporal_ratio = 1
-        for i in range(layers):
-            self.resblocks.append(ResidualAttentionBlock(width, heads, attn_mask, dropout=dropout[i]))
-            if i not in self.drop_layer:
-                self.side_transformer.append(AttnCBlock(self.side_dim, int(self.side_dim * self.temporal_ratio), kernel_size=1, T=self.T))
-                self.side_linears.append(nn.Linear(width, self.side_dim))
-                self.side_lns.append(LayerNorm(width))
-        self.side_lns = nn.ModuleList(self.side_lns)
+        for i in range(len(self.side_layers)):
+            self.resblocks.append(AttnCBlock(self.side_dim, int(self.side_dim * self.temporal_ratio), kernel_size=1, T=self.T))
+            self.adaptation.append(nn.Linear(width, self.side_dim))
+            self.lns_pre.append(LayerNorm(width))
         self.resblocks = nn.ModuleList(self.resblocks)
-        self.side_linears = nn.ModuleList(self.side_linears)
-        self.side_transformer = nn.ModuleList(self.side_transformer)
+        self.adaptation = nn.ModuleList(self.adaptation)
+        self.lns_pre = nn.ModuleList(self.lns_pre)
         side_scale = self.side_dim ** -0.5
         self.side_spatial_position_embeddings = nn.Parameter(side_scale * torch.randn((patch_num, self.side_dim)))
-        
         # SELFY block
         self.corr_layer_index = corr_layer_index
         self.selfy_layers = []
@@ -451,32 +477,25 @@ class Transformer(nn.Module):
             self.side_corr_linears.append(nn.Linear(corr_int_chnls[-1], self.side_dim))
         self.selfy_layers = nn.ModuleList(self.selfy_layers)
         self.side_corr_linears = nn.ModuleList(self.side_corr_linears)
+
         # init weights
         nn.init.normal_(self.side_spatial_position_embeddings, std=0.01)
 
-    def forward(self, x: torch.Tensor, x_side: torch.Tensor, side_spatial_position_embeddings: torch.Tensor=None):
-        k = 0
+    def forward(self, x: torch.tensor, x_img: torch.tensor):
         l = 0
-        h = int(x.shape[0] ** 0.5)
-        for i in range(len(self.resblocks)):
-            x = self.resblocks[i](x)
-            if i in self.drop_layer:
-                if i >= self.side_start_layer and self.drop_layer_mode != 'interval':
-                    k += 1
-                continue
-            xs2xt = self.side_linears[k](self.side_lns[k](x))
+        for i_vid, i_img in enumerate(self.side_layers):
+            xs2xt = self.adaptation[i_vid](self.lns_pre[i_vid](x_img[i_img]))
             x_token = xs2xt[:1, :, :]
             xs2xt = xs2xt[1:, :, :]
-            x_side = 0.5 * x_side + 0.5 * xs2xt 
+            x = 0.5 * x + 0.5 * xs2xt
             # SELFY block
-            if i in self.corr_layer_index:
-                x_corr = self.selfy_layers[l](x)
+            if i_img in self.corr_layer_index:
+                x_corr = self.selfy_layers[l](x_img[i_img])
                 x_corr = self.side_corr_linears[l](x_corr)
-                x_side = x_side + x_corr
+                x = x + x_corr
                 l += 1
-            x_side = self.side_transformer[k](x_side, x_token, self.side_spatial_position_embeddings, i)
-            k += 1
-        return x_side
+            x = self.resblocks[i_vid](x, x_token, self.side_spatial_position_embeddings)
+        return x
 
 
 class VisualTransformer(nn.Module):
@@ -522,37 +541,35 @@ class VisualTransformer(nn.Module):
         self.transformer = Transformer(width,
                                        layers,
                                        heads,
-                                       dropout=dropout,
-                                       side_dim=side_dim,
-                                       T=T,
-                                       patch_num=(input_resolution // patch_size) ** 2,
-                                       corr_layer_index=corr_layer_index,
-                                       corr_window=corr_window,
-                                       corr_ext_chnls=corr_ext_chnls,
-                                       corr_int_chnls=corr_int_chnls,
-                                       corr_func=corr_func
+                                       dropout=dropout
                                        )
-
-        side_scale = self.side_dim ** -0.5
+        self.side_network = SideNetwork(width,
+                                    layers,
+                                    heads,
+                                    dropout=dropout,
+                                    side_dim=side_dim,
+                                    T=T,
+                                    patch_num=(input_resolution // patch_size) ** 2,
+                                    corr_func=corr_func,
+                                    corr_layer_index=corr_layer_index,
+                                    corr_window=corr_window,
+                                    corr_ext_chnls=corr_ext_chnls,
+                                    corr_int_chnls=corr_int_chnls
+                                    )
         self.side_post_bn = bn_3d(self.side_dim)
-        self.side_conv1 = conv_3xnxn_std(3, self.side_dim, kernel_size=patch_size, stride=patch_size)
-        self.side_pre_bn3d = nn.BatchNorm3d(self.side_dim)
-        nn.init.ones_(self.side_pre_bn3d.weight)
-        nn.init.zeros_(self.side_pre_bn3d.bias)
+        self.side_conv1 = nn.Linear(width, self.side_dim)
+        self.side_ln_pre = LayerNorm(self.side_dim)
+        nn.init.ones_(self.side_ln_pre.weight)
+        nn.init.zeros_(self.side_ln_pre.bias)
         nn.init.ones_(self.side_post_bn.weight)
         nn.init.zeros_(self.side_post_bn.bias)
 
     def forward(self, x: torch.Tensor):
-        x_side = rearrange(x, '(b t) c h w -> b c t h w', t=self.T)
+        # x_side = rearrange(x, '(b t) c h w -> b c t h w', t=self.T)
 
         x = self.conv1(x)  # shape = [*, width, grid, grid]
         x = x.reshape(x.shape[0], x.shape[1], -1)  # shape = [*, width, grid ** 2]
         x = x.permute(0, 2, 1)  # shape = [*, grid ** 2, width]
-        
-        bs = x.shape[0] // self.T
-
-        x_side = self.side_pre_bn3d(self.side_conv1(x_side))
-        x_side = rearrange(x_side, 'b c t h w -> (b t) (h w) c')
         
         x = torch.cat([self.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device), x], dim=1)  # shape = [*, grid ** 2 + 1, width]
         x = x + self.positional_embedding.to(x.dtype)
@@ -572,10 +589,9 @@ class VisualTransformer(nn.Module):
         x = self.ln_pre.float()(x)
 
         x = x.permute(1, 0, 2)  # NLD -> LND
-        x_side = x_side.permute(1, 0, 2)
-
-        x_side = self.transformer(x, x_side)
-
+        x_img, act_img = self.transformer(x)
+        x_side = self.side_ln_pre(self.side_conv1(x_img[1:]))
+        x_side = self.side_network(x_side, act_img)
         x_side = x_side.permute(1, 0, 2)
 
         h = int(x_side.shape[1] ** 0.5)
@@ -767,12 +783,15 @@ class CLIP(nn.Module):
 
         side_fc_std = (2 * self.side_dim) ** -0.5
 
-        for block in self.transformer.side_linears:
+        for block in self.visual.side_network.adaptation:
             nn.init.normal_(block.weight, std=side_fc_std)
 
-        for block in self.transformer.side_lns:
+        for block in self.visual.side_network.lns_pre:
             nn.init.zeros_(block.bias)
             nn.init.ones_(block.weight)
+
+        for block in self.visual.side_network.side_corr_linears:
+            nn.init.normal_(block.weight, std=side_fc_std)
 
         if self.text_projection is not None:
             nn.init.normal_(self.text_projection, std=self.transformer.width ** -0.5)
