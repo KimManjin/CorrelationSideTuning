@@ -557,20 +557,23 @@ class VisualTransformer(nn.Module):
                                     corr_int_chnls=corr_int_chnls
                                     )
         self.side_post_bn = bn_3d(self.side_dim)
-        self.side_conv1 = nn.Linear(width, self.side_dim)
-        self.side_ln_pre = LayerNorm(self.side_dim)
-        nn.init.ones_(self.side_ln_pre.weight)
-        nn.init.zeros_(self.side_ln_pre.bias)
+        self.side_conv1 = conv_3xnxn_std(3, self.side_dim, kernel_size=patch_size, stride=patch_size)
+        self.side_pre_bn3d = nn.BatchNorm3d(self.side_dim)
+        nn.init.ones_(self.side_pre_bn3d.weight)
+        nn.init.zeros_(self.side_pre_bn3d.bias)
         nn.init.ones_(self.side_post_bn.weight)
         nn.init.zeros_(self.side_post_bn.bias)
 
     def forward(self, x: torch.Tensor):
-        # x_side = rearrange(x, '(b t) c h w -> b c t h w', t=self.T)
+        x_side = rearrange(x, '(b t) c h w -> b c t h w', t=self.T)
 
         x = self.conv1(x)  # shape = [*, width, grid, grid]
         x = x.reshape(x.shape[0], x.shape[1], -1)  # shape = [*, width, grid ** 2]
         x = x.permute(0, 2, 1)  # shape = [*, grid ** 2, width]
         
+        x_side = self.side_pre_bn3d(self.side_conv1(x_side))
+        x_side = rearrange(x_side, 'b c t h w -> (b t) (h w) c')
+
         x = torch.cat([self.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device), x], dim=1)  # shape = [*, grid ** 2 + 1, width]
         x = x + self.positional_embedding.to(x.dtype)
         
@@ -589,8 +592,9 @@ class VisualTransformer(nn.Module):
         x = self.ln_pre.float()(x)
 
         x = x.permute(1, 0, 2)  # NLD -> LND
-        x_img, act_img = self.transformer(x)
-        x_side = self.side_ln_pre(self.side_conv1(x_img[1:]))
+        x_side = x_side.permute(1, 0, 2)
+
+        _, act_img = self.transformer(x)
         x_side = self.side_network(x_side, act_img)
         x_side = x_side.permute(1, 0, 2)
 
