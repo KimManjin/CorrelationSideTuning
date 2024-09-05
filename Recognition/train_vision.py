@@ -13,7 +13,7 @@ from torch.cuda.amp import GradScaler
 import torchvision
 import torch.optim as optim
 import numpy as np
-from utils.utils import init_distributed_mode, AverageMeter, reduce_tensor, accuracy
+from utils.utils import init_distributed_mode, AverageMeter, reduce_tensor, accuracy, log_model_info
 from utils.logger import setup_logger
 import clip
 
@@ -285,8 +285,9 @@ def main(args):
                 param.requires_grad = True
                 logger.info(name +' True')
             
-    logger.info(model_onehot)
-
+    flops, params, tunable_params = None, 0.0, 0.0
+    if dist.get_rank() == 0:
+        flops, params, tunable_params = log_model_info(model_onehot, config, use_train_input=True)
     ############# criterion #############
     mixup_fn = None
     if config.solver.mixup:

@@ -9,7 +9,7 @@ import torch.distributed as dist
 import torch.backends.cudnn as cudnn
 import torchvision
 import time
-from utils.utils import init_distributed_mode, AverageMeter, reduce_tensor, accuracy
+from utils.utils import init_distributed_mode, AverageMeter, reduce_tensor, accuracy, log_model_info
 from utils.logger import setup_logger
 import clip
 
@@ -217,7 +217,10 @@ def main(args):
 
 
     model_full = VideoCLIP(model, video_head, config)
-    logger.info(model_full)
+    flops, params, tunable_params = None, 0.0, 0.0
+    if dist.get_rank() == 0:
+        flops, params, tunable_params = log_model_info(model_full, config, use_train_input=False)
+    
 
     if os.path.isfile(args.weights):
         checkpoint = torch.load(args.weights, map_location='cpu')

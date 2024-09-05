@@ -11,6 +11,11 @@ import numpy as np
 import json
 import math
 from utils.logger import get_logger
+
+from collections import defaultdict
+from typing import Any, Counter, DefaultDict, Dict, Optional, Tuple, Union
+from fvcore.nn import FlopCountAnalysis
+
 logger = get_logger(__name__)
 
 def init_distributed_mode(args):
@@ -304,6 +309,80 @@ def mean_average_precision(probs, labels):
     ap = map_meter.value()
     ap = float(ap) * 100
     return [torch.tensor(acc[0]).cuda(), torch.tensor(ap).cuda()]
+
+
+def params_count(model):
+    """
+    Compute the number of parameters.
+    Args:
+        model (model): model to count the number of parameters.
+    """
+    params = np.sum([p.numel() for p in model.parameters()]).item()
+    tunable_params = np.sum([p.numel() for p in model.parameters() if p.requires_grad]).item()
+    return params, tunable_params
+
+
+def gpu_mem_usage():
+    """
+    Compute the GPU memory usage for the current device (GB).
+    """
+    if torch.cuda.is_available():
+        mem_usage_bytes = torch.cuda.max_memory_allocated()
+    else:
+        mem_usage_bytes = 0
+    return mem_usage_bytes / 1024**3
+
+
+def get_flops(model, config, use_train_input=True):
+    """
+    Compute the number of FLOPs.
+    Args:
+        model (model): model to compute the FLOPs.
+        config (CfgNode): configs.
+        use_train_input (bool): if True, use the training input size.
+    
+    Returns:
+        flops (float): number of FLOPs.
+    """
+    model_mode = model.training
+    model.eval()
+    input_size = config.data.input_size
+    if not use_train_input:
+        input_size = config.data.input_size
+    if not isinstance(input_size, list):
+        input_size = [input_size, input_size]
+    input_size = [config.data.num_segments, 3] + input_size
+    input_data = torch.randn(*input_size)
+    flops = FlopCountAnalysis(model, input_data)
+    model.train(model_mode)
+    return flops
+    
+
+def log_model_info(model, config, use_train_input=True):
+    """
+    Log info, includes number of parameters, gpu usage, gflops and activation count.
+        The model info is computed when the model is in validation mode.
+    Args:
+        model (model): model to log the info.
+        config (CfgNode): configs.
+        use_train_input (bool): if True, log info for training. Otherwise,
+            log info for testing.
+    """
+    def _human_format(num):
+        magnitude = 0
+        while abs(num) >= 1000:
+            magnitude += 1
+            num /= 1000.0
+        # add more suffixes if you need them
+        return '%.3f%s' % (num, ['', 'K', 'M', 'G', 'T', 'P'][magnitude])
+
+    logger.info("Model:\n{}".format(model))
+    flops = get_flops(model, config, use_train_input)
+    logger.info("Flops: {}".format(_human_format(flops.total())))
+    params, tunable_params = params_count(model)
+    logger.info("Params: {}, tunable Params: {}".format(_human_format(params), _human_format(tunable_params)))
+    logger.info("Mem: {:,} MB".format(gpu_mem_usage()))
+    return flops, params, tunable_params
 
 
 if __name__=='__main__':
