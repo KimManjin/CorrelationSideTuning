@@ -787,15 +787,15 @@ class CLIP(nn.Module):
 
         side_fc_std = (2 * self.side_dim) ** -0.5
 
-        for block in self.visual.side_network.adaptation:
-            nn.init.normal_(block.weight, std=side_fc_std)
+        # for block in self.visual.side_network.adaptation:
+        #     nn.init.normal_(block.weight, std=side_fc_std)
 
-        for block in self.visual.side_network.lns_pre:
-            nn.init.zeros_(block.bias)
-            nn.init.ones_(block.weight)
+        # for block in self.visual.side_network.lns_pre:
+        #     nn.init.zeros_(block.bias)
+        #     nn.init.ones_(block.weight)
 
-        for block in self.visual.side_network.side_corr_linears:
-            nn.init.normal_(block.weight, std=side_fc_std)
+        # for block in self.visual.side_network.side_corr_linears:
+        #     nn.init.normal_(block.weight, std=side_fc_std)
 
         if self.text_projection is not None:
             nn.init.normal_(self.text_projection, std=self.transformer.width ** -0.5)
