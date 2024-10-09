@@ -24,7 +24,7 @@ network:
   arch: ViT-B/16 #ViT-B/32 ViT-B/16
   init: True
   tm: False # localuni t1d atm False
-  drop_out: 0.0
+  dropout: 0.0
   emb_dropout: 0.0
   type: clip_sth
   sim_header: None # Transf   None

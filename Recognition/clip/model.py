@@ -607,155 +607,129 @@ class VisualTransformer(nn.Module):
 
 
 class CLIP(nn.Module):
-    def __init__(self,
-                 embed_dim: int,
-                 # vision
-                 image_resolution: int,
-                 vision_layers: Union[Tuple[int, int, int, int], int],
-                 vision_width: int,
-                 vision_patch_size: int,
-                 # text
-                 context_length: int,
-                 vocab_size: int,
-                 transformer_width: int,
-                 transformer_heads: int,
-                 transformer_layers: int,
-                 joint=False,
-                 tm=None,
-                 T: int = 8,
-                 dropout: float = 0.,
-                 emb_dropout: float = 0.,
-                 side_dim: int = 384,
-                 corr_func: str = "cosine",
-                 corr_layer_index: list = [],
-                 corr_window: list = [5, 9, 9],
-                 corr_ext_chnls: list = [4, 16, 64, 64],
-                 corr_int_chnls: list = [64, 64, 128]
-                 ):
+    def __init__(self, config):
         super().__init__()
 
-        self.side_dim = side_dim
-
-        self.context_length = context_length
-        if dropout > 0.:
-            dpr = [x.item() for x in torch.linspace(0, dropout, vision_layers)]  # stochastic depth decay rule
+        self.side_dim = config.network.side_dim
+        self.T = config.data.num_segments
+        self.context_length = config.network.context_length
+        if config.network.dropout > 0.:
+            dpr = [x.item() for x in torch.linspace(0, config.network.dropout, config.network.vision_layers)]  # stochastic depth decay rule
         else:
             dpr = None
 
-        if isinstance(vision_layers, (tuple, list)):
-            vision_heads = vision_width * 32 // 64
+        if isinstance(config.network.vision_layers, (tuple, list)):
+            vision_heads = config.network.vision_width * 32 // 64
             self.visual = ModifiedResNet(
-                layers=vision_layers,
-                output_dim=embed_dim,
+                layers=config.network.vision_layers,
+                output_dim=config.network.embed_dim,
                 heads=vision_heads,
-                input_resolution=image_resolution,
-                width=vision_width
+                input_resolution=config.network.image_resolution,
+                width=config.network.vision_width
             )
-            if tm:
+            if config.network.tm:
                 logger.info('=========using Temporal Shift Module==========')
                 from modules.temporal_modeling import make_temporal_shift
-                make_temporal_shift(self.visual, T)
+                make_temporal_shift(self.visual, self.T)
 
         else:
-            vision_heads = vision_width // 64
+            vision_heads = config.network.vision_width // 64
             self.visual = VisualTransformer(
-                input_resolution=image_resolution,
-                patch_size=vision_patch_size,
-                width=vision_width,
-                layers=vision_layers,
+                input_resolution=config.network.image_resolution,
+                patch_size=config.network.vision_patch_size,
+                width=config.network.vision_width,
+                layers=config.network.vision_layers,
                 heads=vision_heads,
-                output_dim=embed_dim,
-                joint=joint,dropout=dpr,
-                emb_dropout=emb_dropout,
-                T=T,
-                side_dim=side_dim,
-                corr_layer_index=corr_layer_index,
-                corr_window=corr_window,
-                corr_ext_chnls=corr_ext_chnls,
-                corr_int_chnls=corr_int_chnls,
-                corr_func=corr_func
+                output_dim=config.network.embed_dim,
+                joint=config.network.joint,dropout=dpr,
+                emb_dropout=config.network.emb_dropout,
+                T=self.T,
+                side_dim=config.network.side_dim,
+                corr_layer_index=config.network.corr_layer_index,
+                corr_window=config.network.corr_window,
+                corr_ext_chnls=config.network.corr_ext_chnls,
+                corr_int_chnls=config.network.corr_int_chnls,
+                corr_func=config.network.corr_func
             )
-            if tm == 'tsm':
+            if config.network.tm == 'tsm':
                 logger.info('=========using Temporal Shift Module==========')
                 from modules.temporal_modeling import make_temporal_shift_vit
-                make_temporal_shift_vit(self.visual, T)
-            elif tm == 'tokenshift':
-                logger.info('=========using TokenShift =========={} layers'.format(vision_layers))
+                make_temporal_shift_vit(self.visual, self.T)
+            elif config.network.tm == 'tokenshift':
+                logger.info('=========using TokenShift =========={} layers'.format(config.network.vision_layers))
                 from modules.temporal_modeling import make_tokenshift
                 make_tokenshift(
-                    self.visual, T, n_div=4,
-                    locations_list=[x for x in range(vision_layers)]
+                    self.visual, self.T, n_div=4,
+                    locations_list=[x for x in range(config.network.vision_layers)]
                 )
-            elif tm == "tokent1d":
+            elif config.network.tm == "tokent1d":
                 logger.info('=========using TokenT1D ==========')
                 from modules.temporal_modeling import make_tokenT1D
                 make_tokenT1D(
-                    self.visual, T, n_div=4,
-                    locations_list=[x for x in range(vision_layers)]
+                    self.visual, self.T, n_div=4,
+                    locations_list=[x for x in range(config.network.vision_layers)]
                 )                
-            elif tm == 'dividedST':
+            elif config.network.tm == 'dividedST':
                 logger.info('=========using DividedST ==========')
                 from modules.temporal_modeling import make_DividedST
                 make_DividedST(
-                    self.visual, T, vision_heads, emb_dropout, None,
+                    self.visual, self.T, vision_heads, config.network.emb_dropout, None,
                     locations_list=[8,9,10,11]
                 )
 
-            elif tm == 'localuni':
+            elif config.network.tm == 'localuni':
                 logger.info('=========using LocalUni ==========')
                 from modules.temporal_modeling import make_LocalUni
-                if vision_layers == 12:
-                    start = int(vision_layers * 1/3)
+                if config.network.vision_layers == 12:
+                    start = int(config.network.vision_layers * 1/3)
                 else:
-                    start = int(vision_layers * 1/3)
+                    start = int(config.network.vision_layers * 1/3)
                 make_LocalUni(
-                    self.visual, T, vision_heads, emb_dropout, None,
-                    locations_list=[x for x in range(start, vision_layers)]
+                    self.visual, self.T, vision_heads, config.network.emb_dropout, None,
+                    locations_list=[x for x in range(start, config.network.vision_layers)]
                 )                
-            elif tm == 't1d':
+            elif config.network.tm == 't1d':
                 logger.info('=========using T1D ==========')
                 from modules.temporal_modeling import make_T1D4VIT
-                if vision_layers == 12:
-                    start = int(vision_layers * 1/3)
+                if config.network.vision_layers == 12:
+                    start = int(config.network.vision_layers * 1/3)
                 else:
-                    start = int(vision_layers * 1/3)
+                    start = int(config.network.vision_layers * 1/3)
                 make_T1D4VIT(
-                    self.visual, T,
-                    locations_list=[x for x in range(start, vision_layers)]
+                    self.visual, self.T,
+                    locations_list=[x for x in range(start, config.network.vision_layers)]
                 )    
 
-            elif tm == 'atm':
+            elif config.network.tm == 'atm':
                 logger.info('=========using ATM ==========')
                 from modules.ATM import make_ATM
-                if vision_layers == 12:
+                if config.network.vision_layers == 12:
                     start = 10 # int(vision_layers * 1/3)
                 else:
                     start = 22 # int(vision_layers * 1/3)
                 make_ATM(
-                    self.visual, T,
-                    locations_list=[x for x in range(start, vision_layers)]
+                    self.visual, self.T,
+                    locations_list=[x for x in range(start, config.network.vision_layers)]
                 )  
 
         self.transformer = Transformer(
-            width=transformer_width,
-            layers=transformer_layers,
-            heads=transformer_heads,
+            width=config.network.transformer_width,
+            layers=config.network.transformer_layers,
+            heads=config.network.transformer_heads,
             attn_mask=self.build_attention_mask(),
             dropout=dpr
         )
 
-        self.vocab_size = vocab_size
-        self.token_embedding = nn.Embedding(vocab_size, transformer_width)
-        self.positional_embedding = nn.Parameter(torch.empty(self.context_length, transformer_width))
-        self.ln_final = LayerNorm(transformer_width)
+        self.vocab_size = config.network.vocab_size
+        self.token_embedding = nn.Embedding(config.network.vocab_size, config.network.transformer_width)
+        self.positional_embedding = nn.Parameter(torch.empty(self.context_length, config.network.transformer_width))
+        self.ln_final = LayerNorm(config.network.transformer_width)
         
-        self.dropout = nn.Dropout(emb_dropout)
-        self.emb_dropout = emb_dropout
+        self.dropout = nn.Dropout(config.network.emb_dropout)
+        self.emb_dropout = config.network.emb_dropout
         
-        self.text_projection = nn.Parameter(torch.empty(transformer_width, embed_dim))
+        self.text_projection = nn.Parameter(torch.empty(config.network.transformer_width, config.network.embed_dim))
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
-
-        self.T = T
 
         self.initialize_parameters()
 
@@ -865,61 +839,50 @@ def convert_weights(model: nn.Module):
 
 
 def build_model(state_dict: dict,
-                tm=None,
-                T=8,
-                dropout=0.,
-                joint=False,
-                emb_dropout=0.,
-                pretrain=True,
-                side_dim=384,
-                corr_func: str = "cosine",
-                corr_layer_index: list = [],
-                corr_window: list = [5, 9, 9],
-                corr_ext_chnls: list = [4, 16, 64, 64],
-                corr_int_chnls: list = [64, 64, 128]
+                config
                 ):
+    """
+    Build model from state_dict and config
+
+    Args:
+        state_dict (dict): model state dictionary
+        config (dict): model configuration
+
+    Returns:
+        (nn.Module): model
+    """
+    
     vit = "visual.proj" in state_dict
 
     if vit:
-        vision_width = state_dict["visual.conv1.weight"].shape[0]
-        vision_layers = len([k for k in state_dict.keys() if k.startswith("visual.") and k.endswith(".attn.in_proj_weight")])
-        vision_patch_size = state_dict["visual.conv1.weight"].shape[-1]
-        grid_size = round((state_dict["visual.positional_embedding"].shape[0] - 1) ** 0.5)
-        image_resolution = vision_patch_size * grid_size
+        config.network.vision_width = state_dict["visual.conv1.weight"].shape[0]
+        config.network.vision_layers = len([k for k in state_dict.keys() if k.startswith("visual.") and k.endswith(".attn.in_proj_weight")])
+        config.network.vision_patch_size = state_dict["visual.conv1.weight"].shape[-1]
+        config.network.grid_size = round((state_dict["visual.positional_embedding"].shape[0] - 1) ** 0.5)
+        config.network.image_resolution = config.network.vision_patch_size * config.network.grid_size
     else:
         counts: list = [len(set(k.split(".")[2] for k in state_dict if k.startswith(f"visual.layer{b}"))) for b in [1, 2, 3, 4]]
-        vision_layers = tuple(counts)        
-        vision_width = state_dict["visual.layer1.0.conv1.weight"].shape[0]
-        output_width = round((state_dict["visual.attnpool.positional_embedding"].shape[0] - 1) ** 0.5)
-        vision_patch_size = None
-        assert output_width ** 2 + 1 == state_dict["visual.attnpool.positional_embedding"].shape[0]
-        image_resolution = output_width * 32
+        config.network.vision_layers = tuple(counts)        
+        config.network.vision_width = state_dict["visual.layer1.0.conv1.weight"].shape[0]
+        config.network.output_width = round((state_dict["visual.attnpool.positional_embedding"].shape[0] - 1) ** 0.5)
+        config.network.vision_patch_size = None
+        assert config.network.output_width ** 2 + 1 == state_dict["visual.attnpool.positional_embedding"].shape[0]
+        config.network.image_resolution = config.network.output_width * 32
 
-    embed_dim = state_dict["text_projection"].shape[1]
-    context_length = state_dict["positional_embedding"].shape[0]
-    vocab_size = state_dict["token_embedding.weight"].shape[0]
-    transformer_width = state_dict["ln_final.weight"].shape[0]
-    transformer_heads = transformer_width // 64
-    transformer_layers = len(set(k.split(".")[2] for k in state_dict if k.startswith(f"transformer.resblocks")))
+    config.network.embed_dim = state_dict["text_projection"].shape[1]
+    config.network.context_length = state_dict["positional_embedding"].shape[0]
+    config.network.vocab_size = state_dict["token_embedding.weight"].shape[0]
+    config.network.transformer_width = state_dict["ln_final.weight"].shape[0]
+    config.network.transformer_heads = config.network.transformer_width // 64
+    config.network.transformer_layers = len(set(k.split(".")[2] for k in state_dict if k.startswith(f"transformer.resblocks")))
     
-    model = CLIP(
-        embed_dim,
-        image_resolution, vision_layers, vision_width, vision_patch_size,
-        context_length, vocab_size, transformer_width, transformer_heads, transformer_layers,
-        tm=tm, T=T, joint=joint,
-        dropout=dropout, emb_dropout=emb_dropout,side_dim=side_dim,
-        corr_layer_index=corr_layer_index,
-        corr_window=corr_window,
-        corr_ext_chnls=corr_ext_chnls,
-        corr_int_chnls=corr_int_chnls,
-        corr_func=corr_func
-    )
+    model = CLIP(config)
 
     for key in ["input_resolution", "context_length", "vocab_size"]:
         if key in state_dict:
             del state_dict[key]
     # tm is set to False by default.
-    if tm == True or tm in ["tsm", "tokenshift"]:
+    if config.network.tm == True or config.network.tm in ["tsm", "tokenshift"]:
         # old dict for new model, rename some keys
         model_dict = model.state_dict()
         replace_dict = []
@@ -931,18 +894,18 @@ def build_model(state_dict: dict,
 
 
     convert_weights(model)
-    if pretrain:
+    if config.network.init:
         logger.info('loading clip pretrained model!')
-        if joint and tm != "dividedST":  #or emb_dropout>0 or dropout>0
+        if config.network.joint_st and config.network.tm != "dividedST":  #or emb_dropout>0 or dropout>0
             model.load_state_dict(state_dict,strict=False)
         else:
-            if tm == "tokent1d":
+            if config.network.tm == "tokent1d":
                 model.load_state_dict(state_dict, strict=False)
-            elif tm == "localuni":
+            elif config.network.tm == "localuni":
                 model.load_state_dict(state_dict, strict=False)
-            elif tm == "t1d":
+            elif config.network.tm == "t1d":
                 model.load_state_dict(state_dict, strict=False)                
-            elif tm == "dividedST":
+            elif config.network.tm == "dividedST":
                 # model.load_state_dict(state_dict, strict=False)
                 model_dict = model.state_dict()
                 new_state_dict = state_dict.copy()

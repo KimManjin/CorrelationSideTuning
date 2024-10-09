@@ -92,28 +92,17 @@ def available_models() -> List[str]:
 
 
 def load(
-        name: str,
+        config,
         device: Union[str, torch.device] = "cuda" if torch.cuda.is_available() else "cpu", 
         jit=True, 
-        internal_modeling=False,
-        joint_st=False,
-        T=8,
-        dropout=0.,
-        side_dim=384,
-        corr_func: str = "cosine",
-        corr_layer_index: list = [],
-        corr_window: list = [5, 9, 9],
-        corr_ext_chnls: list = [4, 16, 64, 64],
-        corr_int_chnls: list = [64, 64, 128],
-        emb_dropout=0., 
-        pretrain=True,
         download_root: str = None):
-    """Load a CLIP model
+    """
+    Load a CLIP model
 
     Parameters
     ----------
-    name : str
-        A model name listed by `clip.available_models()`, or the path to a model checkpoint containing the state_dict
+    config : dict
+        A dictionary containing the configuration parameters of the model to be loaded
 
     device : Union[str, torch.device]
         The device to put the loaded model
@@ -132,12 +121,12 @@ def load(
     preprocess : Callable[[PIL.Image], torch.Tensor]
         A torchvision transform that converts a PIL image into a tensor that the returned model can take as its input
     """
-    if name in _MODELS:
-        model_path = _download(_MODELS[name], download_root or os.path.expanduser("~/.cache/clip"))
-    elif os.path.isfile(name):
-        model_path = name
+    if config.network.arch in _MODELS:
+        model_path = _download(_MODELS[config.network.arch], download_root or os.path.expanduser("~/.cache/clip"))
+    elif os.path.isfile(config.network.arch):
+        model_path = config.network.arch
     else:
-        raise RuntimeError(f"Model {name} not found; available models = {available_models()}")
+        raise RuntimeError(f"Model {config.network.arch} not found; available models = {available_models()}")
 
     try:
         # loading JIT archive
@@ -151,20 +140,7 @@ def load(
         state_dict = torch.load(model_path, map_location="cpu")
 
     if not jit:
-        model = build_model(state_dict or model.state_dict(),
-                            joint=joint_st,
-                            tm=internal_modeling,
-                            T=T,
-                            dropout=dropout,
-                            emb_dropout=emb_dropout,
-                            pretrain=pretrain,
-                            side_dim=side_dim,
-                            corr_func=corr_func,
-                            corr_layer_index=corr_layer_index,
-                            corr_window=corr_window,
-                            corr_ext_chnls=corr_ext_chnls,
-                            corr_int_chnls=corr_int_chnls
-                            ).to(device)
+        model = build_model(state_dict or model.state_dict(), config=config).to(device)
         if str(device) == "cpu":
             model.float()        
         return model, model.state_dict()
