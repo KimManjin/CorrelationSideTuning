@@ -7,6 +7,7 @@ data:
   num_segments: 8
   seg_length: 1
   batch_size: 16
+  test_batch_size: 8
   workers: 4
   num_classes: 174
   image_tmpl: "img_{:05d}.jpg"

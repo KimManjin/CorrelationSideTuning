@@ -202,7 +202,7 @@ def main(args):
 
     val_sampler = torch.utils.data.distributed.DistributedSampler(val_data)
     val_loader = DataLoader(val_data,
-        batch_size=config.data.batch_size,num_workers=config.data.workers,
+        batch_size=config.data.test_batch_size,num_workers=config.data.workers,
         sampler=val_sampler, pin_memory=True, drop_last=False)
 
 
