@@ -49,6 +49,7 @@ solver:
   optim: adamw
   lr: 1.e-3
   lr_warmup_step: 4
+  final_factor: 0.01
   weight_decay: 0.15
   betas: [0.9, 0.999]
   loss_type: CE

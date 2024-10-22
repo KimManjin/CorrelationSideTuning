@@ -43,7 +43,8 @@ def _lr_scheduler(config, optimizer):
         lr_scheduler = WarmupCosineAnnealingLR(
             optimizer,
             config.solver.epochs,
-            warmup_epochs=config.solver.lr_warmup_step
+            warmup_epochs=config.solver.lr_warmup_step,
+            final_factor=config.solver.final_factor
         )
     elif config.solver.type == 'multistep':
         if isinstance(config.solver.lr_decay_step, list):
