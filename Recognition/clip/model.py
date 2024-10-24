@@ -427,6 +427,7 @@ class SideNetwork(nn.Module):
                  side_dim=384,
                  T=8,
                  patch_num=49,
+                 drop_layers: list = [],
                  corr_func: str = "cosine",
                  corr_layer_index: list = [],
                  corr_window: list = [5, 9, 9],
@@ -445,12 +446,7 @@ class SideNetwork(nn.Module):
         self.resblocks = []
         self.adaptation = []
         self.lns_pre = []
-        self.drop_layer_mode = 'fix random' # random or fix or False or fix random
-        self.side_start_layer = 0
-        if self.drop_layer_mode == 'interval':
-            self.drop_layers = [i for i in range(0, layers, 2)]
-        else:
-            self.drop_layers = [i for i in range(self.side_start_layer)]
+        self.drop_layers = drop_layers
         self.side_layers = [l for l in range(self.layers) if l not in self.drop_layers]
         self.side_dim = side_dim
         self.temporal_ratio = 1
@@ -510,6 +506,7 @@ class VisualTransformer(nn.Module):
                  joint=False,
                  emb_dropout: float = 0.,
                  T: int = 8,
+                 drop_layers: list = [],
                  side_dim: int = 384,
                  corr_func: str = "cosine",
                  corr_layer_index: list = [],
@@ -550,6 +547,7 @@ class VisualTransformer(nn.Module):
                                     side_dim=side_dim,
                                     T=T,
                                     patch_num=(input_resolution // patch_size) ** 2,
+                                    drop_layers=drop_layers,
                                     corr_func=corr_func,
                                     corr_layer_index=corr_layer_index,
                                     corr_window=corr_window,
@@ -644,6 +642,7 @@ class CLIP(nn.Module):
                 joint=config.network.joint,dropout=dpr,
                 emb_dropout=config.network.emb_dropout,
                 T=self.T,
+                drop_layers=config.network.drop_layers,
                 side_dim=config.network.side_dim,
                 corr_layer_index=config.network.corr_layer_index,
                 corr_window=config.network.corr_window,
