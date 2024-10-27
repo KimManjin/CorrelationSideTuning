@@ -382,7 +382,7 @@ def main(args):
         cur_iter = train(model_onehot, train_loader, optimizer, criterion, scaler,
               epoch, device, lr_scheduler, config, mixup_fn, logger)
 
-        if (epoch+1) % config.logging.eval_freq == 0:  # and epoch>0
+        if (epoch+1) % config.logging.eval_freq == 0 or (epoch+1) > config.solver.epochs - 5:  # and epoch>0
             if config.logging.skip_epoch is not None and epoch in config.logging.skip_epoch:
                 continue
             prec1 = validate(epoch, val_loader, device, model_onehot, config, logger, cur_iter)
