@@ -117,42 +117,51 @@ class STSSTransformation(nn.Module):
 
     
 class STSSExtraction(nn.Module):
-    def __init__(self, num_segments, window=(5,9,9), chnls=(4,16,64,64)):
+    def __init__(self, num_segments, window=(5,9,9), chnls=(4,16,64,64),):
         super(STSSExtraction, self).__init__()
         self.num_segments = num_segments
         self.window = window
         self.chnls = chnls
         
         self.conv0 = nn.Sequential(
-            nn.Conv3d(1, chnls[0], kernel_size=(1,3,3), stride=(1,1,1), padding=(0,1,1), bias=False),
+            nn.Conv3d(self.window[1]*self.window[2], chnls[0], kernel_size=(1,1,1), stride=(1,1,1), padding=(0,0,0), bias=False),
             nn.BatchNorm3d(chnls[0]),
             nn.GELU())
         
-        self.conv1 = nn.Sequential(
-            nn.Conv3d(chnls[0], chnls[1], kernel_size=(1,3,3), stride=(1,2,2), padding=(0,1,1), bias=False),
-            nn.BatchNorm3d(chnls[1]),
-            nn.GELU())
         
-        self.conv2 = nn.Sequential(
-            nn.Conv3d(chnls[1], chnls[2], kernel_size=(1,3,3), stride=(1,2,2), padding=(0,1,1), bias=False),
-            nn.BatchNorm3d(chnls[2]),
-            nn.GELU())
+        # self.conv0 = nn.Sequential(
+        #     nn.Conv3d(1, chnls[0], kernel_size=(1,3,3), stride=(1,1,1), padding=(0,1,1), bias=False),
+        #     nn.BatchNorm3d(chnls[0]),
+        #     nn.GELU())
         
-        self.conv3 = nn.Sequential(
-            nn.Conv3d(chnls[2], chnls[3], kernel_size=(1,3,3), stride=(1,1,1), padding=(0,0,0), bias=False),
-            nn.BatchNorm3d(chnls[3]),
-            nn.GELU())    
+        # self.conv1 = nn.Sequential(
+        #     nn.Conv3d(chnls[0], chnls[1], kernel_size=(1,3,3), stride=(1,2,2), padding=(0,1,1), bias=False),
+        #     nn.BatchNorm3d(chnls[1]),
+        #     nn.GELU())
+        
+        # self.conv2 = nn.Sequential(
+        #     nn.Conv3d(chnls[1], chnls[2], kernel_size=(1,3,3), stride=(1,2,2), padding=(0,1,1), bias=False),
+        #     nn.BatchNorm3d(chnls[2]),
+        #     nn.GELU())
+        
+        # self.conv3 = nn.Sequential(
+        #     nn.Conv3d(chnls[2], chnls[3], kernel_size=(1,3,3), stride=(1,1,1), padding=(0,0,0), bias=False),
+        #     nn.BatchNorm3d(chnls[3]),
+        #     nn.GELU())    
         
     def forward(self, x):
         b,t,h,w,_,l,u,v = x.size()
-        x = rearrange(x, 'b t h w 1 l u v -> (b t h w) 1 l u v')
+        x = rearrange(x, 'b t h w 1 l u v -> (b l) (u v) t h w', t=t, h=h, w=w)
         x = self.conv0(x)
-        x = self.conv1(x)
-        x = self.conv2(x)
-        x = self.conv3(x)
-        x = rearrange(x, '(b t h w) c l 1 1 -> (b l) c t h w', t=t, h=h, w=w)
-        
         return x
+        # x = rearrange(x, 'b t h w 1 l u v -> (b t h w) 1 l u v')
+        # x = self.conv0(x)
+        # x = self.conv1(x)
+        # x = self.conv2(x)
+        # x = self.conv3(x)
+        # x = rearrange(x, '(b t h w) c l 1 1 -> (b l) c t h w', t=t, h=h, w=w)
+        
+        # return x
     
     
 class STSSIntegration(nn.Module):
@@ -195,6 +204,9 @@ class STSSIntegration(nn.Module):
     
 class SELFYBlock(nn.Module):
     def __init__(self,
+                 d_in,
+                 d_hid,
+                 d_out,
                  num_segments=8,
                  window=(5,9,9),
                  ext_chnls=(4,16,64,64),
@@ -205,6 +217,8 @@ class SELFYBlock(nn.Module):
         SELFY block.
 
         Args:
+        - d_in (int): Input feature dimension
+        - d_hid (int): Hidden feature dimension
         - d_out (int): Output feature dimension
         - num_segments (int): Number of temporal segments
         - window (tuple): Window size for spatio-temporal self-attention
@@ -216,7 +230,9 @@ class SELFYBlock(nn.Module):
         - torch.Tensor: Output tensor of shape (b, d_in, num_segments, h, w)
         """
         super(SELFYBlock, self).__init__()
-        
+        self.window = window
+        self.ln_pre = nn.LayerNorm(d_in)
+        self.in_proj = nn.Linear(d_in, d_hid)
         self.stss_transformation = STSSTransformation(
             num_segments=num_segments,
             window=window,
@@ -235,20 +251,18 @@ class SELFYBlock(nn.Module):
             window = window,
             chnls = int_chnls
         )
-        
-        self.activation = nn.GELU()
+        self.out_proj = nn.Linear(int_chnls[-1], d_out)
         
     def forward(self, x):
         # identity = x
         # x shape: (H x W + 1, B x T, C)
-        x = x[1:]
+        x = self.in_proj(self.ln_pre(x))
         H = W = int(sqrt(x.shape[0]))
         x = rearrange(x, '(h w) bt c -> bt c h w', h=H, w=W)
-        out = self.stss_transformation(x)
-        out = self.stss_extraction(out)
-        out = self.stss_integration(out)
-        out = rearrange(out, 'b c t h w -> (h w) (b t) c ')
-        return out
-        # out = out + identity
-        # out = F.relu(out)
-        # return out
+        # stss transformation -> stss extraction -> stss integration
+        x = self.stss_transformation(x)
+        x = self.stss_extraction(x)
+        x = self.stss_integration(x)
+        # Output projection
+        x = self.out_proj(rearrange(x, 'b c t h w -> (h w) (b t) c '))
+        return x
