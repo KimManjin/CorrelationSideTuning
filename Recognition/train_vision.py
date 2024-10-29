@@ -484,9 +484,10 @@ def train(model, train_loader, optimizer, criterion, scaler,
             logger.info(('Epoch: [{0}][{1}/{2}], lr: {lr:.2e}, eta: {3}\t'
                          'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                          'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
+                         'Mem {mem_usage:.2f}GB\t'
                          'Prec@1 {top1.val:.3f} ({top1.avg:.3f})\t'
                          'Loss {loss.val:.4f} ({loss.avg:.4f})'.format(
-                             epoch, i, len(train_loader), eta_sec, batch_time=batch_time, data_time=data_time, 
+                             epoch, i, len(train_loader), eta_sec, batch_time=batch_time, data_time=data_time, mem_usage=gpu_mem_usage(),
                              top1=top1,
                              loss=losses, lr=optimizer.param_groups[-1]['lr'])))  # TODO
             if dist.get_rank() == 0 and config.wandb.use_wandb and not args.debug:

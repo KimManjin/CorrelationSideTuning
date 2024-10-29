@@ -381,7 +381,6 @@ def log_model_info(model, config, use_train_input=True):
     logger.info("Flops: {}".format(_human_format(flops.total())))
     params, tunable_params = params_count(model)
     logger.info("Params: {}, tunable Params: {}".format(_human_format(params), _human_format(tunable_params)))
-    logger.info("Mem: {:,} MB".format(gpu_mem_usage()))
     return flops, params, tunable_params
 
 
