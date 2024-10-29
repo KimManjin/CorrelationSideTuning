@@ -58,6 +58,7 @@ logging:
   print_freq: 10
   eval_freq: 2
   skip_epoch: []
+  acc_per_class: True
 wandb:
   use_wandb: True
   entity: mandos

@@ -7,6 +7,7 @@ import torch
 import torch.distributed as dist
 import torch.distributed.nn as distnn
 from torch import nn
+import torch.nn.functional as F
 import numpy as np
 import json
 import math
@@ -234,12 +235,13 @@ def best_saving(working_dir, epoch, model, video_head, optimizer):
     }, best_name)  # just change to your preferred folder/filename
 
 
-def reduce_tensor(tensor, n=None):
+def reduce_tensor(tensor, n=None, average=True):
     if n is None:
         n = dist.get_world_size()
     rt = tensor.clone()
     dist.all_reduce(rt, op=dist.ReduceOp.SUM)
-    rt = rt / n
+    if average:
+        rt = rt / n
     return rt
 
 
@@ -272,20 +274,87 @@ class AverageMeter:
         self.avg = self.sum / self.count
 
 
+class ListMeter:
+    """Computes and stores the average and current values in torch.tensor (list)"""
+    def __init__(self, length):
+        self.length = length
+        self.reset()
+
+    def reset(self):
+        self.val = torch.zeros(self.length)
+        self.avg = torch.zeros(self.length) 
+        self.sum = torch.zeros(self.length)
+        self.count = torch.zeros(self.length)
+
+    def update(self, val, n=1):
+        """
+        Args:
+            val: torch.tensor of shape (length,) containing values for each item
+            n: int or torch.tensor of shape (length,) containing sample counts
+        """
+        if isinstance(n, int):
+            n = torch.full_like(val, n)
+        
+        assert val.shape == (self.length,), f"val must have shape ({self.length},), got {val.shape}"
+        assert n.shape == (self.length,), f"n must have shape ({self.length},), got {n.shape}"
+        
+        self.val = val
+        self.sum += val
+        self.count += n
+        self.avg = torch.where(self.count > 0, (self.sum / self.count) * 100, 0.)
+
+    def mean(self):
+        return torch.where(self.count > 0, self.avg, 0.).mean()
+    
+    def sync(self):
+        rank = dist.get_rank()
+        world_size = dist.get_world_size()
+        
+        self.val = reduce_tensor(self.val.cuda(), world_size, average=False).cpu()
+        self.sum = reduce_tensor(self.sum.cuda(), world_size, average=False).cpu()
+        self.count = reduce_tensor(self.count.cuda(), world_size, average=False).cpu()
+        self.avg = self.sum / self.count
+
+
 def accuracy(output, target, topk=(1, )):
     """Computes the precision@k for the specified values of k"""
     maxk = max(topk)
     batch_size = target.size(0)
-
+    # Top-k accuracy
     _, pred = output.topk(maxk, 1, True, True)
     pred = pred.t()
     correct = pred.eq(target.view(1, -1).expand_as(pred))
-    res = []
+    topk_acc = []
     for k in topk:
         correct_k = correct[:k].reshape(-1).float().sum(0)
-        res.append(correct_k.mul_(100.0 / batch_size))
-    return res
+        topk_acc.append(correct_k.mul_(100.0 / batch_size))
+    return topk_acc
 
+def correct_per_class(output, target, topk=(1, )):
+    """
+    Get the number of correct predictions per class.
+    """
+    maxk = max(topk)
+    batch_size = target.size(0)
+    # one-hot label encoding
+    one_hot_target = F.one_hot(target, num_classes=output.size(1))
+    one_hot_target_k = one_hot_target.unsqueeze(0).repeat(max(topk), 1, 1)
+    num_samples_per_class = one_hot_target.sum(dim=0).float()
+    # top-k prediction
+    _, pred = output.topk(maxk, 1, True, True)
+    pred = pred.t()
+    correct = pred.eq(target.view(1, -1).expand_as(pred)).unsqueeze(-1)
+    correct_k = one_hot_target_k * correct
+    # topk correct per class
+    topk_correct = []
+    for k in topk:
+        correct_k_per_class = correct_k[:k].float().sum(dim=1).sum(dim=0)
+        topk_correct.append(torch.where(num_samples_per_class > 0,
+                                        correct_k_per_class,
+                                        0.0)
+        )
+    per_class_acc_info = (topk_correct, num_samples_per_class)
+    return per_class_acc_info
 
 from torchnet import meter
 def mean_average_precision(probs, labels):

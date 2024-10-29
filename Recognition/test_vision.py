@@ -9,7 +9,7 @@ import torch.distributed as dist
 import torch.backends.cudnn as cudnn
 import torchvision
 import time
-from utils.utils import init_distributed_mode, AverageMeter, reduce_tensor, accuracy, log_model_info
+from utils.utils import init_distributed_mode, AverageMeter, ListMeter, reduce_tensor, accuracy, correct_per_class, log_model_info
 from utils.logger import setup_logger
 import clip
 
@@ -223,10 +223,18 @@ def main(args):
     if args.distributed:
         model_full = DistributedDataParallel(model_full.cuda(), device_ids=[args.gpu], find_unused_parameters=True)
 
-    prec1 = validate(
+    prec1, (top1_per_class, top5_per_class) = validate(
         val_loader, device, 
         model_full, config, args.test_crops, args.test_clips, logger=logger)
     
+    if config.logging.acc_per_class:
+            # Save per-class accuracies to file
+            save_path = os.path.join(working_dir, 'per_class_accuracies.txt')
+            with open(save_path, 'w') as f:
+                f.write('Class\tTop1\tTop5\n')
+                for i in range(len(top1_per_class)):
+                    f.write(f'{i}\t{top1_per_class[i]:.2f}\t{top5_per_class[i]:.2f}\n')
+            logger.info(f'Per-class accuracies saved to {save_path}')
     return
 
 
@@ -234,6 +242,8 @@ def main(args):
 def validate(val_loader, device, model, config, test_crops, test_clips, logger=None):
     top1 = AverageMeter()
     top5 = AverageMeter()
+    top1_per_class = ListMeter(config.data.num_classes)
+    top5_per_class = ListMeter(config.data.num_classes)
     model.eval()
     proc_start_time = time.time()
 
@@ -259,28 +269,55 @@ def validate(val_loader, device, model, config, test_crops, test_clips, logger=N
             logits = logits.view(batch_size, -1, logits.size(1)).softmax(dim=-1)
             logits = logits.mean(dim=1, keepdim=False)      # bs n_class
 
+            # topk accuracy
             prec = accuracy(logits, class_id, topk=(1, 5))
             prec1 = reduce_tensor(prec[0])
             prec5 = reduce_tensor(prec[1])
 
             top1.update(prec1.item(), class_id.size(0))
             top5.update(prec5.item(), class_id.size(0))
+
+            # topk accuracy per class
+            if config.logging.acc_per_class:
+                correct_k, count = correct_per_class(logits, class_id, topk=(1, 5))
+                correct_1_per_class = reduce_tensor(correct_k[0], average=False)
+                correct_5_per_class = reduce_tensor(correct_k[1], average=False)
+                count_per_class = reduce_tensor(count, average=False)
+
+                top1_per_class.update(correct_1_per_class.cpu(), count_per_class.cpu())
+                top5_per_class.update(correct_5_per_class.cpu(), count_per_class.cpu())
     
             if i % config.logging.print_freq == 0 and dist.get_rank() == 0:
                 runtime = float(cnt_time) / (i + 1) / (batch_size * dist.get_world_size())
-                logger.info(
-                    ('Test: [{0}/{1}], average {runtime:.4f} sec/video \t'
-                     'Prec@1 {top1.val:.3f} ({top1.avg:.3f})\t'
-                     'Prec@5 {top5.val:.3f} ({top5.avg:.3f})'.format(
-                         i, len(val_loader), runtime=runtime, top1=top1, top5=top5)))
+                base_msg = ('Test: [{0}/{1}], average {runtime:.4f} sec/video \t'
+                           'Prec@1 {top1.val:.3f} ({top1.avg:.3f})\t'
+                           'Prec@5 {top5.val:.3f} ({top5.avg:.3f})').format(
+                               i, len(val_loader), runtime=runtime, top1=top1, top5=top5)
+                if True:
+                    top1_per_class_mean = top1_per_class.mean()
+                    top5_per_class_mean = top5_per_class.mean()
+                    base_msg += '\tmPrec@1 {:.3f}\tmPrec@5 {:.3f}'.format(
+                        top1_per_class_mean, top5_per_class_mean)
+                
+                logger.info(base_msg)
 
 
     if dist.get_rank() == 0:
         logger.info('-----Evaluation is finished------')
-        logger.info('Overall Prec@1 {:.03f}% Prec@5 {:.03f}%'.format(top1.avg, top5.avg))
+        base_msg = 'Overall Prec@1 {:.03f}% Prec@5 {:.03f}%'.format(top1.avg, top5.avg)
+        if config.logging.acc_per_class:
+            extra_msg = '\tmPrec@1 ({:.3f})\tmPrec@5 ({:.3f})'.format(top1_per_class.mean(), top5_per_class.mean())
+        else:
+            extra_msg = ''
+        logger.info(base_msg + extra_msg)
         if config.wandb.use_wandb and not args.debug:
-            wandb.log({"test/top1": top1.avg, "test/top5": top5.avg}, step=0)
-    return top1.avg
+            base_log = {"test/top1": top1.avg, "test/top5": top5.avg}
+            if config.logging.acc_per_class:
+                extra_log = {"test/mtop1": top1_per_class.mean(), "test/mtop5": top5_per_class.mean()}
+                base_log.update(extra_log)
+            wandb.log(base_log, step=0)
+
+    return top1.avg, (top1_per_class.avg, top5_per_class.avg)
 
 
 
