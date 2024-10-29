@@ -13,7 +13,7 @@ from torch.cuda.amp import GradScaler
 import torchvision
 import torch.optim as optim
 import numpy as np
-from utils.utils import init_distributed_mode, AverageMeter, reduce_tensor, accuracy, log_model_info
+from utils.utils import init_distributed_mode, AverageMeter, reduce_tensor, accuracy, log_model_info, gpu_mem_usage
 from utils.logger import setup_logger
 import clip
 
