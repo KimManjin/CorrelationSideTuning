@@ -501,7 +501,7 @@ class SideNetwork(nn.Module):
             # SELFY block
             if i_img in self.corr_layer_index:
                 x_corr = self.selfy_layers[l](x_img[i_img][1:])
-                x_corr2 = self.selfy_layers2[l](xs2xt+x_corr)
+                x_corr2 = self.selfy_layers2[l](x_corr)
                 x = x + x_corr + x_corr2
                 l += 1
             x = self.resblocks[i_vid](x, x_token,
