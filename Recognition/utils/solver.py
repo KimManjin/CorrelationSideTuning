@@ -44,6 +44,7 @@ def _lr_scheduler(config, optimizer):
             optimizer,
             config.solver.epochs,
             warmup_epochs=config.solver.lr_warmup_step,
+            warmup_lrs=config.solver.warmup_lr,
             final_factor=config.solver.final_factor
         )
     elif config.solver.type == 'multistep':

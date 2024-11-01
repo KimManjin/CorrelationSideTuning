@@ -412,11 +412,6 @@ def train(model, train_loader, optimizer, criterion, scaler,
     autocast = torch.cuda.amp.autocast if args.precision == 'amp' else suppress
     end = time.time()
     for i,(images, list_id) in enumerate(train_loader):
-        if config.solver.type != 'monitor':
-            if (i + 1) == 1 or (i + 1) % 10 == 0:
-                lr_scheduler.step(epoch + i / len(train_loader))
-        # lr_scheduler.step()
-        # optimizer.zero_grad()
         data_time.update(time.time() - end)
         images = images.view((-1,config.data.num_segments,3)+images.size()[-2:])
 
@@ -464,6 +459,10 @@ def train(model, train_loader, optimizer, criterion, scaler,
                 optimizer.step()  # update param
                 optimizer.zero_grad()  # reset gradient
 
+        if config.solver.type != 'monitor':
+            if (i + 1) == 1 or (i + 1) % 10 == 0:
+                lr_scheduler.step(epoch + i / len(train_loader))
+        
 
         prec1, prec5 = accuracy(logits, list_id, topk=(1, 5))
         top1.update(prec1.item(), logits.size(0))
