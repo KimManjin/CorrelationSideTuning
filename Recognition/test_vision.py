@@ -9,7 +9,7 @@ import torch.distributed as dist
 import torch.backends.cudnn as cudnn
 import torchvision
 import time
-from utils.utils import init_distributed_mode, AverageMeter, ListMeter, reduce_tensor, accuracy, correct_per_class, log_model_info
+from utils.utils import init_distributed_mode, AverageMeter, ListMeter, reduce_tensor, accuracy, correct_per_class, accuracy_per_sample, log_model_info, ddp_all_gather
 from utils.logger import setup_logger
 import clip
 
@@ -223,10 +223,11 @@ def main(args):
     if args.distributed:
         model_full = DistributedDataParallel(model_full.cuda(), device_ids=[args.gpu], find_unused_parameters=True)
 
-    prec1, (top1_per_class, top5_per_class) = validate(
+    prec1, (top1_per_class, top5_per_class), per_sample_results = validate(
         val_loader, device, 
         model_full, config, args.test_crops, args.test_clips, logger=logger)
     
+    # Save per-class accuracies
     if config.logging.acc_per_class:
             # Save per-class accuracies to file
             save_path = os.path.join(working_dir, 'per_class_accuracies.txt')
@@ -235,6 +236,16 @@ def main(args):
                 for i in range(len(top1_per_class)):
                     f.write(f'{i}\t{top1_per_class[i]:.2f}\t{top5_per_class[i]:.2f}\n')
             logger.info(f'Per-class accuracies saved to {save_path}')
+    
+    # Save per-sample results
+    if config.logging.correct_per_sample and per_sample_results is not None:
+        correct_list, class_list = per_sample_results
+        save_path = os.path.join(working_dir, 'per_sample_results.txt')
+        with open(save_path, 'w') as f:
+            f.write('Correct\tClass\n')
+            for correct, class_idx in zip(correct_list, class_list):
+                f.write(f'{int(correct)}\t{class_idx}\n')
+        logger.info(f'Per-sample results saved to {save_path}')
     return
 
 
@@ -246,6 +257,10 @@ def validate(val_loader, device, model, config, test_crops, test_clips, logger=N
     top5_per_class = ListMeter(config.data.num_classes)
     model.eval()
     proc_start_time = time.time()
+
+    # Lists to store per-sample results
+    all_correct = []
+    all_classes = []
 
     with torch.no_grad():
         for i, (image, class_id) in enumerate(val_loader):
@@ -286,7 +301,15 @@ def validate(val_loader, device, model, config, test_crops, test_clips, logger=N
 
                 top1_per_class.update(correct_1_per_class.cpu(), count_per_class.cpu())
                 top5_per_class.update(correct_5_per_class.cpu(), count_per_class.cpu())
-    
+
+            # per-sample accuracy
+            if config.logging.correct_per_sample:
+                correct = accuracy_per_sample(logits, class_id)
+                correct = torch.stack(ddp_all_gather(correct), dim=-1).flatten()
+                gathered_classes = torch.stack(ddp_all_gather(class_id), dim=-1).flatten()
+                all_correct.extend(correct.cpu().tolist())
+                all_classes.extend(gathered_classes.cpu().tolist())
+
             if i % config.logging.print_freq == 0 and dist.get_rank() == 0:
                 runtime = float(cnt_time) / (i + 1) / (batch_size * dist.get_world_size())
                 base_msg = ('Test: [{0}/{1}], average {runtime:.4f} sec/video \t'
@@ -301,6 +324,15 @@ def validate(val_loader, device, model, config, test_crops, test_clips, logger=N
                 
                 logger.info(base_msg)
 
+    if config.logging.acc_per_class:
+        per_class_results = (top1_per_class.avg, top5_per_class.avg)
+    else:
+        per_class_results = None
+
+    if config.logging.correct_per_sample:
+        per_sample_results = (all_correct, all_classes)
+    else:
+        per_sample_results = None
 
     if dist.get_rank() == 0:
         logger.info('-----Evaluation is finished------')
@@ -317,7 +349,7 @@ def validate(val_loader, device, model, config, test_crops, test_clips, logger=N
                 base_log.update(extra_log)
             wandb.log(base_log, step=0)
 
-    return top1.avg, (top1_per_class.avg, top5_per_class.avg)
+    return top1.avg, per_class_results, per_sample_results
 
 
 

@@ -356,6 +356,14 @@ def correct_per_class(output, target, topk=(1, )):
     per_class_acc_info = (topk_correct, num_samples_per_class)
     return per_class_acc_info
 
+def accuracy_per_sample(output, target):
+    """
+    Get per-sample prediction correctness
+    """
+    pred = output.argmax(dim=1)
+    correct = (pred == target).float()
+    return correct
+
 from torchnet import meter
 def mean_average_precision(probs, labels):
     """Computes MAP for ActivityNet evaluation"""

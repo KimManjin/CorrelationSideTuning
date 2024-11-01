@@ -60,6 +60,7 @@ logging:
   eval_freq: 2
   skip_epoch: []
   acc_per_class: True
+  correct_per_sample: True
 wandb:
   use_wandb: True
   entity: mandos
