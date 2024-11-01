@@ -31,8 +31,9 @@ network:
   sim_header: None # Transf   None
   joint_st: False
   drop_fc: 0
-  n_emb: 320 # 320 + 512
-  side_dim: 320
+  n_emb: 192 # 320 + 512
+  side_dim: 192
+  drop_layers: [0, 2, 4, 6, 8, 10]
   corr_layer_index: [3]
   corr_func: "cosine" # 'cosine', 'dotproduct_softmax'
   corr_window: [5, 9, 9]
