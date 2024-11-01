@@ -257,7 +257,7 @@ def main(args):
         modality=config.data.modality,
         image_tmpl=config.data.image_tmpl,
         transform=transform_val, dense_sample=config.data.dense)
-    val_sampler = torch.utils.data.distributed.DistributedSampler(val_data)
+    val_sampler = torch.utils.data.distributed.DistributedSampler(val_data, shuffle=False)
     val_loader = DataLoader(val_data,
         batch_size=config.data.batch_size,num_workers=config.data.workers,
         sampler=val_sampler, drop_last=False)

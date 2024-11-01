@@ -200,7 +200,7 @@ def main(args):
         dense_sample=args.dense,
         test_clips=args.test_clips)
 
-    val_sampler = torch.utils.data.distributed.DistributedSampler(val_data)
+    val_sampler = torch.utils.data.distributed.DistributedSampler(val_data, shuffle=False)
     val_loader = DataLoader(val_data,
         batch_size=config.data.test_batch_size,num_workers=config.data.workers,
         sampler=val_sampler, pin_memory=True, drop_last=False)
