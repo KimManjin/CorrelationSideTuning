@@ -6,7 +6,8 @@ data:
     modality: RGB
     num_segments: 8
     seg_length: 1
-    batch_size: 16
+    batch_size: 12
+    test_batch_size: 6
     workers: 4
     num_classes: 174
     image_tmpl: '{:06d}.jpg'
@@ -34,6 +35,7 @@ network:
     side_dim: 512
     fix_clip: False
     my_fix_clip: True
+    num_checkpoints: 20
 solver:
     type: cosine
     epochs: 30
@@ -41,6 +43,7 @@ solver:
     epoch_offset: 0
     optim: adamw
     lr: 1.e-4
+    warmup_lr: 1.0e-7
     lr_warmup_step: 4
     betas: [0.9, 0.999] # (0.9, 0.999)
     weight_decay: 0.15
@@ -55,3 +58,12 @@ logging:
     print_freq: 10
     eval_freq: 1
     skip_epoch: []
+    acc_per_class: True
+    correct_per_sample: True
+wandb:
+  use_wandb: True
+  entity: mandos
+  key: "5663c183a53a252ec9b39f4816e68bfe70f72107"
+  project_name: "corr_adapter_sthv2"
+  exp_name: "default"
+  group_name: None

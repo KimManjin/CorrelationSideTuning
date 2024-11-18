@@ -7,7 +7,7 @@ data:
   num_segments: 8
   seg_length: 1
   batch_size: 16
-  test_batch_size: 4
+  test_batch_size: 8
   workers: 4
   num_classes: 174
   image_tmpl: "img_{:05d}.jpg"
@@ -42,6 +42,7 @@ network:
   fix_clip: False
   my_fix_clip: True
   sync_bn: False
+  num_checkpoints: 0
 solver:
   type: cosine
   epochs: 40
@@ -49,6 +50,7 @@ solver:
   epoch_offset: 0
   optim: adamw
   lr: 1.e-3
+  warmup_lr: 1.0e-7
   lr_warmup_step: 4
   final_factor: 0.01
   weight_decay: 0.15
@@ -64,6 +66,8 @@ logging:
   print_freq: 10
   eval_freq: 2
   skip_epoch: []
+  acc_per_class: True
+  correct_per_sample: True
 wandb:
   use_wandb: True
   entity: mandos
