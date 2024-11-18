@@ -68,9 +68,9 @@ logging:
     acc_per_class: True
     correct_per_sample: True
 wandb:
-  use_wandb: True
-  entity: mandos
-  key: "5663c183a53a252ec9b39f4816e68bfe70f72107"
-  project_name: "corr_adapter_sthv1"
-  exp_name: "default"
-  group_name: None
+    use_wandb: True
+    entity: mandos
+    key: "5663c183a53a252ec9b39f4816e68bfe70f72107"
+    project_name: "corr_adapter_sthv1"
+    exp_name: "default"
+    group_name: None
