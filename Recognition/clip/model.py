@@ -371,11 +371,11 @@ class ResidualAttentionBlock(nn.Module):
         self.attn_mask = self.attn_mask.to(dtype=x.dtype, device=x.device) if self.attn_mask is not None else None
         return self.attn(x, x, x, need_weights=False, attn_mask=self.attn_mask)[0]
 
-    def forward(self, x: torch.Tensor, use_checkpoint=False):
+    def forward(self, x: torch.Tensor, use_ckpt=False):
         x = self.control_atm(x)
         x = self.control_point1(x)
         # MHSA
-        if use_checkpoint:
+        if use_ckpt:
             attn_out = checkpoint.checkpoint(self.attention, self.ln_1.float()(x))
             x = x + self.drop_path(attn_out)
         else:
@@ -383,7 +383,7 @@ class ResidualAttentionBlock(nn.Module):
 
         x = self.control_point2(x)
         # FFN
-        if use_checkpoint:
+        if use_ckpt:
             mlp_out = checkpoint.checkpoint(self.mlp, self.ln_2.float()(x))
             x = x + self.drop_path(mlp_out)
         else:
@@ -433,7 +433,8 @@ class SideNetwork(nn.Module):
                  corr_layer_index: list = [],
                  corr_window: list = [5, 9, 9],
                  corr_ext_chnls: list = [4, 16, 64, 64],
-                 corr_int_chnls: list = [64, 64, 128]
+                 corr_int_chnls: list = [64, 64, 128],
+                 num_checkpoints: int = 0
                  ):
         super().__init__()
         if dropout is None:
@@ -443,7 +444,7 @@ class SideNetwork(nn.Module):
         self.width = width
         self.layers = layers
         self.T = T
-
+        self.num_checkpoints = num_checkpoints
         self.resblocks = []
         self.adaptation = []
         self.lns_pre = []
@@ -452,7 +453,11 @@ class SideNetwork(nn.Module):
         self.side_dim = side_dim
         self.temporal_ratio = 1
         for i in range(len(self.side_layers)):
-            self.resblocks.append(AttnCBlock(self.side_dim, int(self.side_dim * self.temporal_ratio), kernel_size=1, T=self.T))
+            self.resblocks.append(AttnCBlock(self.side_dim,
+                                             int(self.side_dim * self.temporal_ratio),
+                                             kernel_size=1,
+                                             T=self.T,
+                                             drop_path=dropout[self.side_layers[i]]))
             self.adaptation.append(nn.Linear(width, self.side_dim))
             self.lns_pre.append(LayerNorm(width))
         self.resblocks = nn.ModuleList(self.resblocks)
@@ -504,8 +509,11 @@ class SideNetwork(nn.Module):
                 x_corr2 = self.selfy_layers2[l](x_corr)
                 x = x + x_corr + x_corr2
                 l += 1
+            # resblock
+            use_checkpoint = self.num_checkpoints > 0 and i_vid >= len(self.resblocks) - self.num_checkpoints
             x = self.resblocks[i_vid](x, x_token,
-                                      self.side_spatial_position_embeddings)
+                                      self.side_spatial_position_embeddings,
+                                      use_ckpt=use_checkpoint)
         return x
 
 
@@ -527,7 +535,8 @@ class VisualTransformer(nn.Module):
                  corr_layer_index: list = [],
                  corr_window: list = [5, 9, 9],
                  corr_ext_chnls: list = [4, 16, 64, 64],
-                 corr_int_chnls: list = [64, 64, 128]
+                 corr_int_chnls: list = [64, 64, 128],
+                 num_checkpoints: int = 0
                  ):
         super().__init__()
         self.input_resolution = input_resolution
@@ -547,13 +556,14 @@ class VisualTransformer(nn.Module):
             self.time_embedding = nn.Parameter(scale * torch.randn(T, width))  # pos emb
         if emb_dropout > 0:
             logger.info('emb_dropout:{}'.format(emb_dropout))
-
+        # if max(dropout) > 0:
+        #     logger.info('dropout:{}'.format(dropout))
         self.side_dim = side_dim
         ## Attention Blocks
         self.transformer = Transformer(width,
                                        layers,
                                        heads,
-                                       dropout=dropout
+                                       dropout=None
                                        )
         self.side_network = SideNetwork(width,
                                     layers,
@@ -567,7 +577,8 @@ class VisualTransformer(nn.Module):
                                     corr_layer_index=corr_layer_index,
                                     corr_window=corr_window,
                                     corr_ext_chnls=corr_ext_chnls,
-                                    corr_int_chnls=corr_int_chnls
+                                    corr_int_chnls=corr_int_chnls,
+                                    num_checkpoints=num_checkpoints
                                     )
         self.side_post_bn = bn_3d(self.side_dim)
         self.side_conv1 = conv_3xnxn_std(3, self.side_dim, kernel_size=patch_size, stride=patch_size)
@@ -663,7 +674,8 @@ class CLIP(nn.Module):
                 corr_window=config.network.corr_window,
                 corr_ext_chnls=config.network.corr_ext_chnls,
                 corr_int_chnls=config.network.corr_int_chnls,
-                corr_func=config.network.corr_func
+                corr_func=config.network.corr_func,
+                num_checkpoints=config.network.num_checkpoints
             )
             if config.network.tm == 'tsm':
                 logger.info('=========using Temporal Shift Module==========')

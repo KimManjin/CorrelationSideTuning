@@ -37,6 +37,7 @@ network:
   fix_clip: False
   my_fix_clip: True
   sync_bn: False
+  num_checkpoints: 0
 solver:
   type: cosine
   epochs: 40
