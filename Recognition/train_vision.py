@@ -120,6 +120,8 @@ def main(args):
 
     if 'something' in config.data.dataset:
         from datasets.sth import Video_dataset
+    elif 'diving' in config.data.dataset:
+        from datasets.diving48 import Video_dataset
     else:
         from datasets.kinetics import Video_dataset
 
