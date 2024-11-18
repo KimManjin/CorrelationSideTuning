@@ -148,8 +148,13 @@ def main(args):
     # rescale size
     if 'something' in config.data.dataset:
         scale_size = (256, 320) 
+    elif 'k400' in config.data.dataset:
+        scale_size = 224
     else:
-        scale_size = 256 if config.data.input_size == 224 else config.data.input_size
+        if args.test_crops == 3:
+            scale_size = config.data.input_size
+        else:
+            scale_size = 256 if config.data.input_size == 224 else config.data.input_size
 
     # crop size
     input_size = config.data.input_size
