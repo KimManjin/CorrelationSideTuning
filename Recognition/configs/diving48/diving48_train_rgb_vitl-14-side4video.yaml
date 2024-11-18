@@ -22,7 +22,7 @@ data:
     rand_aug: False
     rand_erase: False
 network:
-    arch: ViT-B/16  #ViT-B/32 ViT-B/16
+    arch: ViT-L/14  #ViT-B/32 ViT-B/16
     init: True
     tm: False # localuni t1d atm False
     dropout: 0.0

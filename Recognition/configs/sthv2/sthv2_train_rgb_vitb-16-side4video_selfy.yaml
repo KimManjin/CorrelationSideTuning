@@ -35,6 +35,7 @@ network:
   side_dim: 320
   drop_layers: []
   corr_layer_index: [3]
+  corr_dim: 128
   corr_func: "cosine" # 'cosine', 'dotproduct_softmax'
   corr_window: [5, 9, 9]
   corr_ext_chnls: [4, 16, 64, 64]

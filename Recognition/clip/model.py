@@ -429,6 +429,7 @@ class SideNetwork(nn.Module):
                  T=8,
                  patch_num=49,
                  drop_layers: list = [],
+                 corr_dim: int = 128,
                  corr_func: str = "cosine",
                  corr_layer_index: list = [],
                  corr_window: list = [5, 9, 9],
@@ -450,6 +451,7 @@ class SideNetwork(nn.Module):
         self.lns_pre = []
         self.drop_layers = drop_layers
         self.side_layers = [l for l in range(self.layers) if l not in self.drop_layers]
+        self.corr_dim = corr_dim
         self.side_dim = side_dim
         self.temporal_ratio = 1
         for i in range(len(self.side_layers)):
@@ -472,7 +474,7 @@ class SideNetwork(nn.Module):
         for i in self.corr_layer_index:
             self.selfy_layers.append(SELFYBlock(
                                 d_in=width,
-                                d_hid=128,
+                                d_hid=self.corr_dim,
                                 d_out=self.side_dim,
                                 num_segments=T,
                                 window=corr_window,
@@ -482,7 +484,7 @@ class SideNetwork(nn.Module):
                                 ))
             self.selfy_layers2.append(SELFYBlock(
                                 d_in=self.side_dim,
-                                d_hid=128,
+                                d_hid=self.corr_dim,
                                 d_out=self.side_dim,
                                 num_segments=T,
                                 window=corr_window,
@@ -531,6 +533,7 @@ class VisualTransformer(nn.Module):
                  T: int = 8,
                  drop_layers: list = [],
                  side_dim: int = 384,
+                 corr_dim: int = 128,
                  corr_func: str = "cosine",
                  corr_layer_index: list = [],
                  corr_window: list = [5, 9, 9],
@@ -573,6 +576,7 @@ class VisualTransformer(nn.Module):
                                     T=T,
                                     patch_num=(input_resolution // patch_size) ** 2,
                                     drop_layers=drop_layers,
+                                    corr_dim=corr_dim,
                                     corr_func=corr_func,
                                     corr_layer_index=corr_layer_index,
                                     corr_window=corr_window,
@@ -670,6 +674,7 @@ class CLIP(nn.Module):
                 T=self.T,
                 drop_layers=config.network.drop_layers,
                 side_dim=config.network.side_dim,
+                corr_dim=config.network.corr_dim,
                 corr_layer_index=config.network.corr_layer_index,
                 corr_window=config.network.corr_window,
                 corr_ext_chnls=config.network.corr_ext_chnls,
