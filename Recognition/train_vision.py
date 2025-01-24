@@ -313,7 +313,12 @@ def main(args):
         if os.path.isfile(config.pretrain):
             logger.info("=> loading checkpoint '{}'".format(config.pretrain))
             checkpoint = torch.load(config.pretrain, map_location='cpu')
-            model_onehot.load_state_dict(checkpoint['model_state_dict'], strict=False)
+            state_dict = checkpoint['model_state_dict']
+            if state_dict['fc.weight'].size(0) != config.data.num_classes:
+                state_dict.pop('fc.weight')
+                state_dict.pop('fc.bias')
+                logger.info('=> pop last fc layer')
+            model_onehot.load_state_dict(state_dict, strict=False)
             del checkpoint
         else:
             logger.info("=> no checkpoint found at '{}'".format(config.resume))
