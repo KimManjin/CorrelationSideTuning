@@ -84,6 +84,8 @@ def main(args):
         from datasets.sth import Video_dataset
     elif 'diving' in config['data']['dataset']:
         from datasets.diving48 import Video_dataset
+    elif 'finegym' in config.data.dataset:
+        from datasets.finegym import Video_dataset
     else:
         from datasets.kinetics import Video_dataset
 

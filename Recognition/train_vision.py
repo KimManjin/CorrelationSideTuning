@@ -13,7 +13,7 @@ from torch.cuda.amp import GradScaler
 import torchvision
 import torch.optim as optim
 import numpy as np
-from utils.utils import init_distributed_mode, AverageMeter, reduce_tensor, accuracy, log_model_info, gpu_mem_usage
+from utils.utils import init_distributed_mode, AverageMeter, ListMeter, reduce_tensor, accuracy, correct_per_class, log_model_info, gpu_mem_usage
 from utils.logger import setup_logger
 import clip
 
@@ -122,6 +122,8 @@ def main(args):
         from datasets.sth import Video_dataset
     elif 'diving' in config.data.dataset:
         from datasets.diving48 import Video_dataset
+    elif 'finegym' in config.data.dataset:
+        from datasets.finegym import Video_dataset
     else:
         from datasets.kinetics import Video_dataset
 
@@ -508,6 +510,8 @@ def train(model, train_loader, optimizer, criterion, scaler,
 def validate(epoch, val_loader, device, model, config, logger, cur_iter=0):
     top1 = AverageMeter()
     top5 = AverageMeter()
+    top1_per_class = ListMeter(config.data.num_classes)
+    top5_per_class = ListMeter(config.data.num_classes)
     model.eval()
     with torch.no_grad():
         for i, (image, class_id) in enumerate(val_loader):
@@ -516,6 +520,8 @@ def validate(epoch, val_loader, device, model, config, logger, cur_iter=0):
             class_id = class_id.to(device)
             image_input = image.to(device).view(-1, c, h, w)
             logits = model(image_input)  # B 400
+
+            # topk accuracy
             prec = accuracy(logits, class_id, topk=(1, 5))
             prec1 = reduce_tensor(prec[0])
             prec5 = reduce_tensor(prec[1])
@@ -523,18 +529,38 @@ def validate(epoch, val_loader, device, model, config, logger, cur_iter=0):
             top1.update(prec1.item(), class_id.size(0))
             top5.update(prec5.item(), class_id.size(0))
 
+            # topk accuracy per class
+            if config.logging.acc_per_class:
+                correct_k, count = correct_per_class(logits, class_id, topk=(1, 5))
+                correct_1_per_class = reduce_tensor(correct_k[0], average=False)
+                correct_5_per_class = reduce_tensor(correct_k[1], average=False)
+                count_per_class = reduce_tensor(count, average=False)
+
+                top1_per_class.update(correct_1_per_class.cpu(), count_per_class.cpu())
+                top5_per_class.update(correct_5_per_class.cpu(), count_per_class.cpu())
+
             if i % config.logging.print_freq == 0:
-                logger.info(
-                    ('Test: [{0}/{1}]\t'
-                     'Prec@1 {top1.val:.3f} ({top1.avg:.3f})\t'
-                     'Prec@5 {top5.val:.3f} ({top5.avg:.3f})'.format(
-                         i, len(val_loader), top1=top1, top5=top5)))
-    logger.info(('Testing Results: Prec@1 {top1.avg:.3f} Prec@5 {top5.avg:.3f}'
-        .format(top1=top1, top5=top5)))
+                base_log = ('Test: [{0}/{1}]\t'
+                            'Prec@1 {top1.val:.3f} ({top1.avg:.3f})\t'
+                            'Prec@5 {top5.val:.3f} ({top5.avg:.3f})'.format(
+                        i, len(val_loader), top1=top1, top5=top5))
+                if config.logging.acc_per_class:
+                    extra_log = ('\tmPrec@1 ({:.3f})\tmPrec@5 ({:.3f})'.format(top1_per_class.mean(), top5_per_class.mean()))
+                else:
+                    extra_log = ''
+                logger.info(base_log + extra_log)
+    base_log = 'Overall Prec@1 {:.03f}% Prec@5 {:.03f}%'.format(top1.avg, top5.avg)
+    if config.logging.acc_per_class:
+        extra_log = ' mPrec@1 ({:.03f}) mPrec@5 ({:.03f})'.format(top1_per_class.mean(), top5_per_class.mean())
+    else:
+        extra_log = ''
+    logger.info(base_log + extra_log)
     if dist.get_rank() == 0 and config.wandb.use_wandb and not args.debug:
-        wandb.log({"val/top1": top1.avg,
-                    "val/top5": top5.avg},
-                    step=cur_iter)
+        base_log = {"val/top1": top1.avg, "val/top5": top5.avg}
+        if config.logging.acc_per_class:
+            extra_log = {"val/mtop1": top1_per_class.mean(), "val/mtop5": top5_per_class.mean()}
+            base_log.update(extra_log)
+        wandb.log(base_log, step=cur_iter)
     return top1.avg
 
 
