@@ -19,6 +19,8 @@ from random import sample
 import torch.utils.checkpoint as checkpoint
 import numpy as np
 
+from modules.selfy import SELFYBlock
+
 _MODELS = {
     "RN50": "https://openaipublic.azureedge.net/clip/models/afeb0e10f9e5a86da6080e35cf09123aca3b358a0c3e3b6c78a7b63bc04b6762/RN50.pt",
     "RN101": "https://openaipublic.azureedge.net/clip/models/8fa8567bab74a42d41c5915025a8e4538c3bdbe8804a470a72f30b0d94fab599/RN101.pt",
@@ -408,7 +410,22 @@ class Transformer(nn.Module):
         return self.resblocks(x)
 
 class SideTransformer(nn.Module):
-    def __init__(self, width: int, layers: int, heads: int, attn_mask: torch.Tensor = None, dropout=None, side_dim=384, T=8, patch_num=49):
+    def __init__(self,
+                 width: int,
+                 layers: int,
+                 heads: int,
+                 attn_mask: torch.Tensor = None,
+                 dropout=None,
+                 side_dim=384,
+                 T=8,
+                 patch_num=49,
+                 corr_dim: int = 128,
+                 corr_func: str = "cosine",
+                 corr_layer_index: list = [],
+                 corr_window: list = [5, 9, 9],
+                 corr_ext_chnls: list = [4, 16, 64, 64],
+                 corr_int_chnls: list = [64, 64, 128]
+                 ):
         super().__init__()
         if dropout is None:
             dropout = [0.0 for i in range(layers)] 
@@ -434,22 +451,55 @@ class SideTransformer(nn.Module):
         else:
             raise NotImplementedError
         
+        # SELFY block
+        self.corr_dim = corr_dim
+        if len(corr_layer_index) > 0:
+            corr_layer_index = [int(i) for i in corr_layer_index]
+        self.corr_layer_index = corr_layer_index
+        self.selfy_layers = []
+        self.selfy_layers2 = []
+
         for i in range(layers):
             self.resblocks.append(ResidualAttentionBlock(width, heads, attn_mask, dropout=dropout[i]))
             if i in self.side_layers:
                 self.side_transformer.append(AttnCBlock(self.side_dim, self.side_dim, kernel_size=1, T=self.T))
                 self.side_linears.append(nn.Linear(width, self.side_dim))
                 self.side_lns.append(LayerNorm(width))
+            if i in self.corr_layer_index:
+                self.selfy_layers.append(SELFYBlock(
+                                d_in=width,
+                                d_hid=self.corr_dim,
+                                d_out=self.side_dim,
+                                num_segments=T,
+                                window=corr_window,
+                                ext_chnls=corr_ext_chnls,
+                                int_chnls=corr_int_chnls,
+                                corr_func=corr_func
+                                ))
+                self.selfy_layers2.append(SELFYBlock(
+                                d_in=self.side_dim,
+                                d_hid=self.corr_dim,
+                                d_out=self.side_dim,
+                                num_segments=T,
+                                window=corr_window,
+                                ext_chnls=corr_ext_chnls,
+                                int_chnls=corr_int_chnls,
+                                corr_func=corr_func
+                                ))
         self.side_lns = nn.ModuleList(self.side_lns)
         self.resblocks = nn.ModuleList(self.resblocks)
         self.side_linears = nn.ModuleList(self.side_linears)
         self.side_transformer = nn.ModuleList(self.side_transformer)
+        # SELFY block
+        self.selfy_layers = nn.ModuleList(self.selfy_layers)
+        self.selfy_layers2 = nn.ModuleList(self.selfy_layers2)
         side_scale = self.side_dim ** -0.5
         self.side_spatial_position_embeddings = nn.Parameter(side_scale * torch.randn((patch_num+1, self.side_dim)))
         nn.init.normal_(self.side_spatial_position_embeddings, std=0.01)
 
     def forward(self, x: torch.Tensor, x_side: torch.Tensor):
         k = 0
+        l = 0
         for i in range(len(self.resblocks)):
             x = self.resblocks[i](x)
             if i not in self.side_layers:
@@ -458,13 +508,33 @@ class SideTransformer(nn.Module):
             x_token = xs2xt[:1, :, :]
             xs2xt = xs2xt[1:, :, :]
             x_side = 0.5 * x_side + 0.5 * xs2xt
+            # SELFY block
+            if i in self.corr_layer_index:
+                x_corr = self.selfy_layers[l](x[1:])
+                x_corr2 = self.selfy_layers2[l](x_corr)
+                x_side = x_side + x_corr + x_corr2
+                l += 1
             x_side = self.side_transformer[k](x_side, x_token, self.side_spatial_position_embeddings, i)
             k += 1
         return x, x_side
 
 class VisualTransformer(nn.Module):
-    def __init__(self, input_resolution: int, patch_size: int, width: int, layers: int, heads: int, output_dim: int,
-                 linear_patch: str = '2d',T=12, side_dim=320):
+    def __init__(self,
+                 input_resolution: int,
+                 patch_size: int,
+                 width: int,
+                 layers: int,
+                 heads: int,
+                 output_dim: int,
+                 linear_patch: str = '2d',
+                 T=12,
+                 side_dim=320,
+                 corr_dim: int = 128,
+                 corr_func: str = "cosine",
+                 corr_layer_index: list = [],
+                 corr_window: list = [5, 9, 9],
+                 corr_ext_chnls: list = [4, 16, 64, 64],
+                 corr_int_chnls: list = [64, 64, 128]):
         super().__init__()
         self.input_resolution = input_resolution
         self.output_dim = output_dim
@@ -478,7 +548,18 @@ class VisualTransformer(nn.Module):
 
         self.T = T
         self.side_dim = side_dim
-        self.transformer = SideTransformer(width, layers, heads, side_dim=self.side_dim, T=self.T, patch_num=(input_resolution // patch_size) ** 2)
+        self.transformer = SideTransformer(width,
+                                           layers,
+                                           heads,
+                                           side_dim=self.side_dim,
+                                           T=self.T,
+                                           patch_num=(input_resolution // patch_size) ** 2,
+                                           corr_dim=corr_dim,
+                                           corr_func=corr_func,
+                                           corr_layer_index=corr_layer_index,
+                                           corr_window=corr_window,
+                                           corr_ext_chnls=corr_ext_chnls,
+                                           corr_int_chnls=corr_int_chnls)
 
         self.ln_post = LayerNorm(width)
         self.proj = nn.Parameter(scale * torch.randn(width, output_dim))
@@ -566,6 +647,12 @@ class CLIP(nn.Module):
                  linear_patch: str = '2d',
                  T: int = 12,
                  side_dim: int = 320,
+                 corr_dim: int = 128,
+                 corr_func: str = "cosine",
+                 corr_layer_index: list = [],
+                 corr_window: list = [5, 9, 9],
+                 corr_ext_chnls: list = [4, 16, 64, 64],
+                 corr_int_chnls: list = [64, 64, 128]
                  ):
         super().__init__()
 
@@ -592,6 +679,12 @@ class CLIP(nn.Module):
                 linear_patch=linear_patch,
                 T = T,
                 side_dim=side_dim,
+                corr_dim=corr_dim,
+                corr_func=corr_func,
+                corr_layer_index=corr_layer_index,
+                corr_window=corr_window,
+                corr_ext_chnls=corr_ext_chnls,
+                corr_int_chnls=corr_int_chnls
             )
 
         self.transformer = Transformer(

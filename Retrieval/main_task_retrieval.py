@@ -52,6 +52,12 @@ def get_args(description='CLIP4Clip on Retrieval Task'):
     parser.add_argument('--max_words', type=int, default=20, help='')
     parser.add_argument('--max_frames', type=int, default=100, help='')
     parser.add_argument('--side_dim', type=int, default=320, help='')
+    parser.add_argument('--corr_dim', type=int, default=128, help='')
+    parser.add_argument('--corr_func', type=str, default="cosine", help='')
+    parser.add_argument('--corr_layer_index', type=list, default=[], help='')
+    parser.add_argument('--corr_window', type=list, default=[5, 9, 9], help='')
+    parser.add_argument('--corr_ext_chnls', type=list, default=[64], help='')
+    parser.add_argument('--corr_int_chnls', type=list, default=[64, 64, 128], help='')
     parser.add_argument('--feature_framerate', type=int, default=1, help='')
     parser.add_argument('--margin', type=float, default=0.1, help='margin for loss')
     parser.add_argument('--hard_negative_rate', type=float, default=0.5, help='rate of intra negative sample')
@@ -213,11 +219,11 @@ def init_model(args, device, n_gpu, local_rank):
 
     if args.freeze_text_encoder == True:
         for name,param in model.named_parameters():
-            if 'clip.transformer.' in name and 'side' not in name:
+            if 'clip.transformer.' in name and 'corr' not in name and 'selfy' not in name and 'side' not in name:
                 param.requires_grad_(False)
     if args.freeze_vit_encoder == True:
         for name,param in model.named_parameters():
-            if 'visual' in name and 'side' not in name and 'visual.head' not in name and 'visual.norm' not in name:
+            if 'corr' not in name and 'selfy' not in name and 'visual' in name and 'side' not in name and 'visual.head' not in name and 'visual.norm' not in name:
                 param.requires_grad_(False)
     return model
 

@@ -145,6 +145,8 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
             image_resolution, vision_layers-cut_top_layer, vision_width, vision_patch_size,
             context_length, vocab_size, transformer_width, transformer_heads, transformer_layers-cut_top_layer,
             linear_patch=self.linear_patch, T=self.task_config.max_frames, side_dim=self.task_config.side_dim,
+            corr_dim=self.task_config.corr_dim, corr_func=self.task_config.corr_func, corr_layer_index=self.task_config.corr_layer_index,
+            corr_window=self.task_config.corr_window, corr_ext_chnls=self.task_config.corr_ext_chnls, corr_int_chnls=self.task_config.corr_int_chnls
         ).float()
 
         for key in ["input_resolution", "context_length", "vocab_size"]:

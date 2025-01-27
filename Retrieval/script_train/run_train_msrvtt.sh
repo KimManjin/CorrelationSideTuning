@@ -1,4 +1,4 @@
-DATA_PATH=/xx/MSRVTT
+DATA_PATH=/mnt/storage/datasets/msrvtt
 python -m torch.distributed.launch --nproc_per_node=8 --master_port 2234 \
 main_task_retrieval.py --do_train --num_thread_reader=4 \
 --epochs=5 --batch_size=128 --n_display=50 \
@@ -6,7 +6,7 @@ main_task_retrieval.py --do_train --num_thread_reader=4 \
 --val_csv ${DATA_PATH}/msrvtt_data/MSRVTT_JSFUSION_test.csv \
 --data_path ${DATA_PATH}/msrvtt_data/MSRVTT_data.json \
 --features_path ${DATA_PATH}/frames_30fps \
---output_dir ckpts/side4video_msrvtt \
+--output_dir ckpts/moss_msrvtt_run1 \
 --lr 1e-4 --max_words 32 --max_frames 12 --batch_size_val 16 --side_dim 320 \
 --datatype msrvtt --expand_msrvtt_sentences \
 --feature_framerate 1 --coef_lr 1e-3 \
