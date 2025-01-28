@@ -5,4 +5,6 @@ Recognition/exp/*
 Recognition/wandb
 Recognition/mae_pretrain
 Recognition/dino_pretrain
+Retrieval/ckpts
+Retrieval/clip_pretrain
 .vscode
