@@ -6,7 +6,7 @@ data:
     modality: RGB
     num_segments: 16
     seg_length: 1
-    batch_size: 32
+    batch_size: 16
     test_batch_size: 8
     workers: 4
     num_classes: 400
