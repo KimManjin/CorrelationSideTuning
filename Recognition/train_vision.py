@@ -561,7 +561,11 @@ def validate(epoch, val_loader, device, model, config, logger, cur_iter=0):
             extra_log = {"val/mtop1": top1_per_class.mean(), "val/mtop5": top5_per_class.mean()}
             base_log.update(extra_log)
         wandb.log(base_log, step=cur_iter)
-    return top1.avg
+    
+    if 'finegym' in config.data.dataset:
+        return top1_per_class.mean()
+    else:
+        return top1.avg
 
 
 if __name__ == '__main__':
