@@ -5,6 +5,11 @@ Recognition/exp/*
 Recognition/wandb
 Recognition/mae_pretrain
 Recognition/dino_pretrain
+Recognition/imgs/*
+Recognition/*.ipynb
+Recognition/*.png
 Retrieval/ckpts
 Retrieval/clip_pretrain
+*.png
+imgs/*
 .vscode
