@@ -65,8 +65,8 @@ class STSSTransformation(nn.Module):
 
     def _correlation(self, feat1, feat2):
         if self.corr_func == "cosine":
-            feat1 = F.normalize(feat1, p=2, dim=1) # btl, c, h, w
-            feat2 = F.normalize(feat2, p=2, dim=1) # btl, c, h, w
+            feat1 = F.normalize(feat1, p=2, dim=1, eps=1e-7) # btl, c, h, w
+            feat2 = F.normalize(feat2, p=2, dim=1, eps=1e-7) # btl, c, h, w
         elif self.corr_func in ["dotproduct", "dotproduct_softmax"]:
             scale = feat1.size(1) ** -0.5
             feat1 = feat1 * scale
