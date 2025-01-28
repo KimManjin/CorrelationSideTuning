@@ -163,7 +163,7 @@ def main(args):
     video_head = video_header(
         config.network.sim_header,
         model_state_dict)
-    model_full = VideoCLIP(model, video_head, config)
+    model_full = VideoCLIP(model, video_head, config, args)
 
     flops, params, tunable_params = None, 0.0, 0.0
     if dist.get_rank() == 0:
