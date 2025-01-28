@@ -3,4 +3,6 @@ __pycache__
 Recognition/exp_onehot/*
 Recognition/exp/*
 Recognition/wandb
+Recognition/mae_pretrain
+Recognition/dino_pretrain
 .vscode

@@ -21,9 +21,14 @@ from datasets.transforms import GroupScale, GroupCenterCrop, Stack, ToTorchForma
 from modules.video_clip import video_header
 
 class VideoCLIP(nn.Module):
-    def __init__(self, clip_model, fusion_model, config) :
+    def __init__(self, clip_model, fusion_model, config, args):
         super(VideoCLIP, self).__init__()
-        self.visual = clip_model.visual
+        if 'dino' in args.config:
+            self.visual = clip_model
+        elif 'mae' in args.config:
+            self.visual = clip_model
+        else:
+            self.visual = clip_model.visual
         self.fusion_model = fusion_model
         self.n_seg = config.data.num_segments
         self.drop_out = nn.Dropout(p=config.network.drop_fc)
@@ -127,23 +132,43 @@ def main(args):
         }
         from eva_clip import create_model_and_transforms
         model, _, preprocess = create_model_and_transforms(model_name, pretrained=weight_path[model_name], force_custom_clip=True, T=config.data.num_segments, side_dim=config.network.side_dim)
-        clip_state_dict = model.state_dict()
+        model_state_dict = model.state_dict()
         # get evaclip model end ########    
+    elif model_name in ['DINO-ViT-B-16']:
+        weight_path = {
+            "DINO-ViT-B-16":'./dino_pretrain/dino_vitbase16_pretrain.pth'
+        }
+        from dino.build import build_model_from_checkpoints
+        model = build_model_from_checkpoints(config, pretrained=weight_path[model_name])
+        model_state_dict = model.state_dict()
+    elif model_name in ['MAE-ViT-B-16']:
+        weight_path = {
+            "MAE-ViT-B-16":'./mae_pretrain/mae_pretrain_vit_base.pth'
+        }
+        from mae.build import build_model_from_checkpoints
+        model = build_model_from_checkpoints(config, pretrained=weight_path[model_name])
+        model_state_dict = model.state_dict()
     else:
         # get fp16 model and weight
         import clip
-        model, clip_state_dict = clip.load(
+        model, model_state_dict = clip.load(
             config,
             device='cpu',
             jit=False,
             download_root='./clip_pretrain') # Must set jit=False for training  ViT-B/32
 
-    video_head = video_header(
-        config.network.sim_header,
-        clip_state_dict)
-
     if args.precision == "amp" or args.precision == "fp32":
         model = model.float()
+
+    video_head = video_header(
+        config.network.sim_header,
+        model_state_dict)
+    model_full = VideoCLIP(model, video_head, config)
+
+    flops, params, tunable_params = None, 0.0, 0.0
+    if dist.get_rank() == 0:
+        flops, params, tunable_params = log_model_info(model_full, config, use_train_input=False)
+
 
 
     input_mean = [0.48145466, 0.4578275, 0.40821073]
@@ -215,10 +240,6 @@ def main(args):
         sampler=val_sampler, pin_memory=True, drop_last=False)
 
 
-    model_full = VideoCLIP(model, video_head, config)
-    flops, params, tunable_params = None, 0.0, 0.0
-    if dist.get_rank() == 0:
-        flops, params, tunable_params = log_model_info(model_full, config, use_train_input=False)
     
 
     if os.path.isfile(args.weights):
