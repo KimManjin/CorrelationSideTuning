@@ -11,7 +11,6 @@ import torchvision
 import time
 from utils.utils import init_distributed_mode, AverageMeter, ListMeter, reduce_tensor, accuracy, correct_per_class, accuracy_per_sample, log_model_info, ddp_all_gather
 from utils.logger import setup_logger
-import clip
 
 import yaml
 from dotmap import DotMap
