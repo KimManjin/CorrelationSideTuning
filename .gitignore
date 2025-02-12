@@ -1,10 +1,8 @@
-Recognition/clip_pretrain
+Recognition/pretrain
 __pycache__
 Recognition/exp_onehot/*
 Recognition/exp/*
 Recognition/wandb
-Recognition/mae_pretrain
-Recognition/dino_pretrain
 Recognition/imgs/*
 Recognition/*.ipynb
 Recognition/*.png

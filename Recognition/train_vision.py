@@ -15,7 +15,6 @@ import torch.optim as optim
 import numpy as np
 from utils.utils import init_distributed_mode, AverageMeter, ListMeter, reduce_tensor, accuracy, correct_per_class, log_model_info, gpu_mem_usage
 from utils.logger import setup_logger
-import clip
 
 from pathlib import Path
 import yaml
@@ -137,13 +136,13 @@ def main(args):
         shutil.copy(args.config, working_dir)
         shutil.copy('train_vision.py', working_dir)
         if 'eva' in args.config:
-            shutil.copy('eva_clip/eva_vit_model.py', working_dir)
+            shutil.copy('models/eva_clip/eva_vit_model.py', working_dir)
         elif 'dino' in args.config:
-            shutil.copy('dino/vision_transformer.py', working_dir)
+            shutil.copy('models/dino/vision_transformer.py', working_dir)
         elif 'mae' in args.config:
-            shutil.copy('mae/models_vit.py', working_dir)
+            shutil.copy('models/mae/models_vit.py', working_dir)
         else:
-            shutil.copy('clip/model.py', working_dir)
+            shutil.copy('models/clip/model.py', working_dir)
 
 
     # build logger. If True, use Wandb to logging
@@ -193,37 +192,37 @@ def main(args):
         # TODO: modify to take config argument
         # get evaclip model start ########
         weight_path = {
-            "EVA02-CLIP-L-14": './clip-pretrain/EVA02_CLIP_L_psz14_s4B.pt',
-            "EVA02-CLIP-L-14-336": './clip-pretrain/EVA02_CLIP_L_336_psz14_s6B.pt',
-            "EVA02-CLIP-bigE-14":'./clip-pretrain/EVA02_CLIP_E_psz14_s4B.pt',
-            "EVA02-CLIP-bigE-14-plus":'./clip_pretrain/EVA02_CLIP_E_psz14_plus_s9B.pt'
+            "EVA02-CLIP-L-14": './pretrain/clip/EVA02_CLIP_L_psz14_s4B.pt',
+            "EVA02-CLIP-L-14-336": './pretrain/clip/EVA02_CLIP_L_336_psz14_s6B.pt',
+            "EVA02-CLIP-bigE-14":'./pretrain/clip/EVA02_CLIP_E_psz14_s4B.pt',
+            "EVA02-CLIP-bigE-14-plus":'./pretrain/clip/EVA02_CLIP_E_psz14_plus_s9B.pt'
         }
-        from eva_clip import create_model_and_transforms
+        from models.eva_clip import create_model_and_transforms
         model, _, preprocess = create_model_and_transforms(model_name, pretrained=weight_path[model_name], force_custom_clip=True, T=config.data.num_segments, side_dim=config.network.side_dim)
         model_state_dict = model.state_dict()
         # get evaclip model end ########    
     elif model_name in ['DINO-ViT-B-16']:
         weight_path = {
-            "DINO-ViT-B-16":'./dino_pretrain/dino_vitbase16_pretrain.pth'
+            "DINO-ViT-B-16":'./pretrain/dino/dino_vitbase16_pretrain.pth'
         }
-        from dino.build import build_model_from_checkpoints
+        from models.dino.build import build_model_from_checkpoints
         model = build_model_from_checkpoints(config, pretrained=weight_path[model_name])
         model_state_dict = model.state_dict()
     elif model_name in ['MAE-ViT-B-16']:
         weight_path = {
-            "MAE-ViT-B-16":'./mae_pretrain/mae_pretrain_vit_base.pth'
+            "MAE-ViT-B-16":'./pretrain/mae/mae_pretrain_vit_base.pth'
         }
-        from mae.build import build_model_from_checkpoints
+        from models.mae.build import build_model_from_checkpoints
         model = build_model_from_checkpoints(config, pretrained=weight_path[model_name])
         model_state_dict = model.state_dict()
     else:
         # get fp16 model and weight
-        import clip
+        import models.clip as clip
         model, model_state_dict = clip.load(
             config,
             device='cpu',
             jit=False,
-            download_root='./clip_pretrain') # Must set jit=False for training  ViT-B/32
+            download_root='./pretrain/clip') # Must set jit=False for training  ViT-B/32
 
     if args.precision == "amp" or args.precision == "fp32":
         model = model.float()
