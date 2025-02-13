@@ -7,7 +7,7 @@ data:
   num_segments: 8
   seg_length: 1
   batch_size: 16
-  test_batch_size: 8
+  test_batch_size: 16
   workers: 4
   num_classes: 174
   image_tmpl: "img_{:05d}.jpg"
@@ -38,7 +38,7 @@ network:
   corr_dim: 128
   corr_func: "cosine" # 'cosine', 'dotproduct_softmax'
   corr_window: [5, 9, 9]
-  corr_ext_chnls: [4, 16, 64, 64]
+  corr_ext_chnls: [64]
   corr_int_chnls: [64, 64, 128]
   fix_clip: False
   my_fix_clip: True
