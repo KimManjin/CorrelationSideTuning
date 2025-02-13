@@ -1,10 +1,10 @@
 resume:
-pretrain:
+pretrain: "exp/s4v_vitb16_16x224_k400_run1/model_best.pt"
 seed: 2048
 data:
     dataset: diving48
     modality: RGB
-    num_segments: 16
+    num_segments: 32
     seg_length: 1
     batch_size: 16
     test_batch_size: 8
@@ -18,7 +18,7 @@ data:
     label_list: "lists/diving48_labels.csv"
     input_size: 224
     random_shift: True
-    num_sample: 2
+    num_sample: 1
     rand_aug: False
     rand_erase: False
 network:
@@ -41,7 +41,7 @@ network:
     num_checkpoints: 0
 solver:
     type: cosine
-    epochs: 40
+    epochs: 30
     start_epoch: 0
     epoch_offset: 0
     optim: adamw

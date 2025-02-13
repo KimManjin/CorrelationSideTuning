@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import argparse
+import re
 
 import torch
 import torch.nn as nn
@@ -75,9 +76,39 @@ def best_saving(working_dir, epoch, model, optimizer):
 
 
 def update_dict(dict):
+    def _rename_param(key):
+        # This regex matches keys of the form:
+        #   <prefix>selfy_layers<digits>.<layer_index><rest>
+        # For example, it matches:
+        #   visual.side_network.selfy_layers2.0.stss_extraction.conv0.1.weight
+        # where:
+        #   prefix = "visual.side_network."
+        #   digits = "2"   (if present; if missing, treat as empty)
+        #   layer_index = "0"
+        #   rest = ".stss_extraction.conv0.1.weight"
+        pattern = r'^(.*?)(selfy_layers)(\d*)\.(\d+)(\..+)$'
+        m = re.match(pattern, key)
+        if m:
+            prefix = m.group(1)
+            digits = m.group(3)
+            layer_index = m.group(4)
+            rest = m.group(5)
+            # If digits is empty (i.e. key was 'selfy_layers' only), then use 0.
+            new_enc_index = str(int(digits) - 1) if digits else "0"
+            # Construct the new key:
+            # (visual.side_network.selfy_layers<index>.<layer_index>.<...>)
+            # -> (visual.side_network.moss_layers.<layer_index>.stss_encoders.<index-1>.<...>)
+            new_key = f"{prefix}moss_layers.{layer_index}.stss_encoders.{new_enc_index}{rest}"
+            return new_key
+        else:
+            return key
     new_dict = {}
     for k, v in dict.items():
-        new_dict[k.replace('module.', '')] = v
+        new_k = k.replace('module.', '')
+        new_k = _rename_param(new_k)
+        new_dict[new_k] = v
+        if new_k != k:
+            print(f"Renaming parameter: {k} -> {new_k}")
     return new_dict
 
 def get_parser():
@@ -188,7 +219,7 @@ def main(args):
     # get fp16 model and weight
     model_name = config.network.arch
     if model_name in ["EVA02-CLIP-L-14", "EVA02-CLIP-L-14-336", "EVA02-CLIP-bigE-14", "EVA02-CLIP-bigE-14-plus"]:
-        # TODO: add SELFY model
+        # TODO: add MOSS model
         # TODO: modify to take config argument
         # get evaclip model start ########
         weight_path = {
@@ -235,7 +266,7 @@ def main(args):
     # freeze model
     if config.network.my_fix_clip:
         for name, param in model_onehot.named_parameters():
-            if 'corr' not in name and 'selfy' not in name and 'visual' in name and 'side' not in name and 'ln_post' not in name and 'visual.proj' not in name or 'logit_scale' in name:
+            if 'corr' not in name and 'moss' not in name and 'visual' in name and 'side' not in name and 'ln_post' not in name and 'visual.proj' not in name or 'logit_scale' in name:
                 param.requires_grad = False
                 logger.info(name + ' False')
             else:
@@ -335,6 +366,7 @@ def main(args):
             logger.info("=> loading checkpoint '{}'".format(config.pretrain))
             checkpoint = torch.load(config.pretrain, map_location='cpu')
             state_dict = checkpoint['model_state_dict']
+            state_dict = update_dict(state_dict)
             if state_dict['fc.weight'].size(0) != config.data.num_classes:
                 state_dict.pop('fc.weight')
                 state_dict.pop('fc.bias')
@@ -370,6 +402,7 @@ def main(args):
         if os.path.isfile(config.resume):
             logger.info("=> loading checkpoint '{}'".format(config.resume))
             checkpoint = torch.load(config.resume, map_location='cpu')
+            checkpoint['model_state_dict'] = update_dict(checkpoint['model_state_dict'])
             model_onehot.load_state_dict(checkpoint['model_state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             for state in optimizer.state.values():

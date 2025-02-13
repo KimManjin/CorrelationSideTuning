@@ -1,10 +1,10 @@
 resume:
-pretrain: 
+pretrain: "exp/s4v_selfy_vitl14_16x224_k400_run3/model_best.pt"
 seed: 1024
 data:
     dataset: diving48
     modality: RGB
-    num_segments: 16
+    num_segments: 32
     seg_length: 1
     batch_size: 12
     test_batch_size: 4
@@ -18,7 +18,7 @@ data:
     label_list: "lists/diving48_labels.csv"
     input_size: 224
     random_shift: True
-    num_sample: 2
+    num_sample: 1
     rand_aug: False
     rand_erase: False
 network:
@@ -39,6 +39,7 @@ network:
     corr_window: [5, 9, 9]
     corr_ext_chnls: [64]
     corr_int_chnls: [64, 64, 128]
+    corr_num_encoders: 2
     fix_clip: False 
     my_fix_clip: True
     sync_bn: False

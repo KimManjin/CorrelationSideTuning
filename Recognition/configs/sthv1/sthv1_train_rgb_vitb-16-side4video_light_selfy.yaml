@@ -40,6 +40,7 @@ network:
     corr_window: [5, 9, 9]
     corr_ext_chnls: [64]
     corr_int_chnls: [64, 64, 128]
+    corr_num_encoders: 2
     fix_clip: False
     my_fix_clip: True
     sync_bn: False

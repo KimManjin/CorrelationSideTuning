@@ -25,7 +25,7 @@ import torch.nn as nn
 import torch.utils.checkpoint as checkpoint
 from einops import rearrange
 from .utils import trunc_normal_
-from modules.selfy import SELFYBlock
+from modules.moss import MOSSBlock
 
 logger = logging.getLogger(__name__)
 
@@ -315,6 +315,7 @@ class SideNetwork(nn.Module):
                  corr_window: list = [5, 9, 9],
                  corr_ext_chnls: list = [4, 16, 64, 64],
                  corr_int_chnls: list = [64, 64, 128],
+                 corr_num_encoders: int = 2,
                  num_checkpoints: int = 0
                  ):
         super().__init__()
@@ -349,10 +350,9 @@ class SideNetwork(nn.Module):
         self.side_spatial_position_embeddings = nn.Parameter(side_scale * torch.randn((patch_num, self.side_dim)))
         # SELFY block
         self.corr_layer_index = corr_layer_index
-        self.selfy_layers = []
-        self.selfy_layers2 = []
+        self.moss_layers = []
         for i in self.corr_layer_index:
-            self.selfy_layers.append(SELFYBlock(
+            self.moss_layers.append(MOSSBlock(
                                 d_in=width,
                                 d_hid=self.corr_dim,
                                 d_out=self.side_dim,
@@ -360,20 +360,10 @@ class SideNetwork(nn.Module):
                                 window=corr_window,
                                 ext_chnls=corr_ext_chnls,
                                 int_chnls=corr_int_chnls,
-                                corr_func=corr_func
+                                corr_func=corr_func,
+                                n_encoders=corr_num_encoders
                                 ))
-            self.selfy_layers2.append(SELFYBlock(
-                                d_in=self.side_dim,
-                                d_hid=self.corr_dim,
-                                d_out=self.side_dim,
-                                num_segments=T,
-                                window=corr_window,
-                                ext_chnls=corr_ext_chnls,
-                                int_chnls=corr_int_chnls,
-                                corr_func=corr_func
-                                ))
-        self.selfy_layers = nn.ModuleList(self.selfy_layers)
-        self.selfy_layers2 = nn.ModuleList(self.selfy_layers2)
+        self.moss_layers = nn.ModuleList(self.moss_layers)
         # init weights
         nn.init.normal_(self.side_spatial_position_embeddings, std=0.01)
 
@@ -386,9 +376,8 @@ class SideNetwork(nn.Module):
             x = 0.5 * x + 0.5 * xs2xt
             # SELFY block
             if i_img in self.corr_layer_index:
-                x_corr = self.selfy_layers[l](x_img[i_img][1:])
-                x_corr2 = self.selfy_layers2[l](x_corr)
-                x = x + x_corr + x_corr2
+                x_corr = self.moss_layers[l](x_img[i_img][1:])
+                x = x + x_corr
                 l += 1
             # resblock
             x = self.resblocks[i_vid](x, x_token,
@@ -423,6 +412,7 @@ class VisionTransformer(nn.Module):
                  corr_window=None,
                  corr_ext_chnls=None,
                  corr_int_chnls=None,
+                 corr_num_encoders=2,
                  **kwargs):
         super().__init__()
         self.num_features = self.embed_dim = embed_dim
@@ -458,7 +448,8 @@ class VisionTransformer(nn.Module):
                                         corr_layer_index=corr_layer_index,
                                         corr_window=corr_window,
                                         corr_ext_chnls=corr_ext_chnls,
-                                        corr_int_chnls=corr_int_chnls)
+                                        corr_int_chnls=corr_int_chnls,
+                                        corr_num_encoders=corr_num_encoders)
         self.side_post_bn = bn_3d(side_dim)
         self.side_conv1 = conv_3xnxn_std(3, side_dim, kernel_size=patch_size, stride=patch_size)
         self.side_pre_bn3d = nn.BatchNorm3d(side_dim)

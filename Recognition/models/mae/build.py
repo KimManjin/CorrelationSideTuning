@@ -34,6 +34,7 @@ def build_model_from_checkpoints(config, pretrained=None):
         corr_window=config.network.corr_window,
         corr_ext_chnls=config.network.corr_ext_chnls,
         corr_int_chnls=config.network.corr_int_chnls,
+        corr_num_encoders=config.network.corr_num_encoders,
     )
     msg = model.load_state_dict(state_dict, strict=False)
     

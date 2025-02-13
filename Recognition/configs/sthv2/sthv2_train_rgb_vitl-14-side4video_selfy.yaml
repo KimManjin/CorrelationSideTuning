@@ -40,6 +40,7 @@ network:
     corr_window: [5, 9, 9]
     corr_ext_chnls: [96]
     corr_int_chnls: [96, 96, 192]
+    corr_num_encoders: 2
     fix_clip: False
     my_fix_clip: True
     num_checkpoints: 24

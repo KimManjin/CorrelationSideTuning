@@ -1,5 +1,6 @@
 import os
 import argparse
+import re
 
 import torch
 import torch.nn as nn
@@ -71,9 +72,39 @@ def get_parser():
     return args
 
 def update_dict(dict):
+    def _rename_param(key):
+        # This regex matches keys of the form:
+        #   <prefix>selfy_layers<digits>.<layer_index><rest>
+        # For example, it matches:
+        #   visual.side_network.selfy_layers2.0.stss_extraction.conv0.1.weight
+        # where:
+        #   prefix = "visual.side_network."
+        #   digits = "2"   (if present; if missing, treat as empty)
+        #   layer_index = "0"
+        #   rest = ".stss_extraction.conv0.1.weight"
+        pattern = r'^(.*?)(selfy_layers)(\d*)\.(\d+)(\..+)$'
+        m = re.match(pattern, key)
+        if m:
+            prefix = m.group(1)
+            digits = m.group(3)
+            layer_index = m.group(4)
+            rest = m.group(5)
+            # If digits is empty (i.e. key was 'selfy_layers' only), then use 0.
+            new_enc_index = str(int(digits) - 1) if digits else "0"
+            # Construct the new key:
+            # (visual.side_network.selfy_layers<index>.<layer_index>.<...>)
+            # -> (visual.side_network.moss_layers.<layer_index>.stss_encoders.<index-1>.<...>)
+            new_key = f"{prefix}moss_layers.{layer_index}.stss_encoders.{new_enc_index}{rest}"
+            return new_key
+        else:
+            return key
     new_dict = {}
     for k, v in dict.items():
-        new_dict[k.replace('module.', '')] = v
+        new_k = k.replace('module.', '')
+        new_k = _rename_param(new_k)
+        new_dict[new_k] = v
+        if new_k != k:
+            print(f"Renaming parameter: {k} -> {new_k}")
     return new_dict
 
 
@@ -120,7 +151,7 @@ def main(args):
     # get fp16 model and weight
     model_name = config.network.arch
     if model_name in ["EVA02-CLIP-L-14", "EVA02-CLIP-L-14-336", "EVA02-CLIP-bigE-14", "EVA02-CLIP-bigE-14-plus"]:
-        # TODO: add SELFY model
+        # TODO: add MOSS model
         # TODO: modify to take config argument
         # get evaclip model start ########
         weight_path = {

@@ -9,39 +9,22 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-try:
-    from spatial_correlation_sampler import SpatialCorrelationSampler
-except ImportError:
-    logger.info('[ImportError] Cannot import SpatialCorrelationSampler')
-
-
 class STSSTransformation(nn.Module):
     def __init__(self,
                  num_segments,
                  window=(5,9,9),
-                 corr_func="cosine",
-                 use_corr_sampler=False):
+                 corr_func="cosine"):
         super(STSSTransformation, self).__init__()
         self.num_segments = num_segments
         self.window = window
         assert window[1] == window[2]
         self.corr_func = corr_func
-        self.use_corr_sampler = use_corr_sampler
         if self.corr_func == "cosine":
             self.pad_value = 0 # -1 #TODO: check which one is better
         elif self.corr_func == "dotproduct_softmax":
             self.pad_value = -float("Inf")
         else:
             self.pad_value = 0
-        
-        # Use precompiled spatial correlation sampler if available.
-        if use_corr_sampler:
-            try:
-                self.correlation_sampler = SpatialCorrelationSampler(1, window[1], 1, 0, 1)
-            except:
-                logger.info("[Warning] SpatialCorrelationSampler cannot be used.")
-                self.use_corr_sampler = False
-
 
     def _convert_global_to_local(self, corr_g):
         """
@@ -82,11 +65,8 @@ class STSSTransformation(nn.Module):
             scale = feat1.size(1) ** -0.5
             feat1 = feat1 * scale
             
-        if self.use_corr_sampler:
-            corr = self.correlation_sampler(feat1, feat2) # TODO: fix this
-        else:
-            corr = torch.einsum('bchw,bcuv->bhwuv', feat1, feat2)
-            corr = self._convert_global_to_local(corr)
+        corr = torch.einsum('bchw,bcuv->bhwuv', feat1, feat2)
+        corr = self._convert_global_to_local(corr)
 
         if self.corr_func == "dotproduct_softmax":
             corr_shape = corr.shape
@@ -202,7 +182,7 @@ class STSSIntegration(nn.Module):
     
     
     
-class SELFYBlock(nn.Module):
+class STSSEncoder(nn.Module):
     def __init__(self,
                  d_in,
                  d_hid,
@@ -214,7 +194,7 @@ class SELFYBlock(nn.Module):
                  corr_func="cosine"
                 ):
         """
-        SELFY block.
+        STSS encoder.
 
         Args:
         - d_in (int): Input feature dimension
@@ -229,7 +209,7 @@ class SELFYBlock(nn.Module):
         Returns:
         - torch.Tensor: Output tensor of shape (b, d_in, num_segments, h, w)
         """
-        super(SELFYBlock, self).__init__()
+        super(STSSEncoder, self).__init__()
         self.window = window
         self.ln_pre = nn.LayerNorm(d_in)
         self.in_proj = nn.Linear(d_in, d_hid)
@@ -255,7 +235,7 @@ class SELFYBlock(nn.Module):
         
     def forward(self, x):
         # identity = x
-        # x shape: (H x W + 1, B x T, C)
+        # x shape: (H x W, B x T, C)
         x = self.in_proj(self.ln_pre(x))
         H = W = int(sqrt(x.shape[0]))
         x = rearrange(x, '(h w) bt c -> bt c h w', h=H, w=W)
@@ -266,3 +246,43 @@ class SELFYBlock(nn.Module):
         # Output projection
         x = self.out_proj(rearrange(x, 'b c t h w -> (h w) (b t) c '))
         return x
+
+class MOSSBlock(nn.Module):
+    def __init__(self,
+                 d_in,
+                 d_hid,
+                 d_out,
+                 num_segments=8,
+                 window=(5,9,9),
+                 ext_chnls=(64),
+                 int_chnls=(64,64,128),
+                 corr_func="cosine",
+                 n_encoders=2
+                ):
+        super(MOSSBlock, self).__init__()
+        self.n_segment = num_segments
+        self.stss_encoders = []
+        for i in range(n_encoders):
+            self.stss_encoders.append(
+                STSSEncoder(
+                    d_in=d_in if i == 0 else d_out,
+                    d_hid=d_hid,
+                    d_out=d_out,
+                    num_segments=num_segments,
+                    window=window,
+                    ext_chnls=ext_chnls,
+                    int_chnls=int_chnls,
+                    corr_func=corr_func
+                )
+            )
+        self.stss_encoders = nn.ModuleList(self.stss_encoders)
+        
+        
+    def forward(self, x):            
+        # n bt c
+        out = []
+        for stss_encoder in self.stss_encoders:
+            x = stss_encoder(x)
+            out.append(x)
+        out = torch.stack(out, dim=0).sum(dim=0)
+        return out
