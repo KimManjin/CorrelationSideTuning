@@ -1,6 +1,6 @@
 resume:
 pretrain:
-seed: 2048
+seed: 1024
 data:
     dataset: somethingv1
     modality: RGB
