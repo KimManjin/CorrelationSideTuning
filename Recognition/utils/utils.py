@@ -316,6 +316,39 @@ class ListMeter:
         self.avg = self.sum / self.count
 
 
+def accuracy_epic_kitchens(verb_output, noun_output, verb_target, noun_target, topk=(1,)):
+    """Computes the action accuracy for Epic-Kitchens where both verb and noun need to be correct
+    """
+    maxk = max(topk)
+    batch_size = verb_target.size(0)
+    
+    # Verb top-k accuracy
+    _, verb_pred = verb_output.topk(maxk, 1, True, True)  # (B, maxk)
+    verb_pred = verb_pred.t()
+    verb_target = verb_target.view(1, -1).expand_as(verb_pred)  # (B, maxk)
+    verb_correct = verb_pred.eq(verb_target)  # (B, maxk)
+    # Noun top-k accuracy
+    _, noun_pred = noun_output.topk(maxk, 1, True, True)  # (B, maxk)
+    noun_pred = noun_pred.t()
+    noun_target = noun_target.view(1, -1).expand_as(noun_pred)  # (B, maxk)
+    noun_correct = noun_pred.eq(noun_target)  # (B, maxk)
+    # Action top-k accuracy
+    action_correct = verb_correct & noun_correct  # (B, maxk)
+    
+    # Calculate top-k accuracies
+    action_topk_acc = []
+    verb_topk_acc = []
+    noun_topk_acc = []  
+    for k in topk:
+        # For each k, check if any of the top-k predictions are correct
+        action_correct_k = action_correct[:, :k].reshape(-1).float().sum(0)
+        verb_correct_k = verb_correct[:, :k].reshape(-1).float().sum(0)
+        noun_correct_k = noun_correct[:, :k].reshape(-1).float().sum(0)
+        action_topk_acc.append(action_correct_k.mul_(100.0 / batch_size))
+        verb_topk_acc.append(verb_correct_k.mul_(100.0 / batch_size))
+        noun_topk_acc.append(noun_correct_k.mul_(100.0 / batch_size))
+    return action_topk_acc, verb_topk_acc, noun_topk_acc
+
 def accuracy(output, target, topk=(1, )):
     """Computes the precision@k for the specified values of k"""
     maxk = max(topk)
@@ -363,6 +396,17 @@ def accuracy_per_sample(output, target):
     pred = output.argmax(dim=1)
     correct = (pred == target).float()
     return correct
+
+def accuracy_per_sample_epic_kitchens(verb_output, noun_output, verb_target, noun_target):
+    """
+    Get per-sample prediction correctness for Epic-Kitchens where both verb and noun need to be correct
+    """
+    verb_pred = verb_output.argmax(dim=1)
+    noun_pred = noun_output.argmax(dim=1)
+    verb_correct = (verb_pred == verb_target)
+    noun_correct = (noun_pred == noun_target)
+    action_correct = (verb_correct & noun_correct)
+    return action_correct.float(), verb_correct.float(), noun_correct.float()
 
 from torchnet import meter
 def mean_average_precision(probs, labels):

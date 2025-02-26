@@ -14,7 +14,7 @@ from torch.cuda.amp import GradScaler
 import torchvision
 import torch.optim as optim
 import numpy as np
-from utils.utils import init_distributed_mode, AverageMeter, ListMeter, reduce_tensor, accuracy, correct_per_class, log_model_info, gpu_mem_usage
+from utils.utils import init_distributed_mode, AverageMeter, ListMeter, reduce_tensor, accuracy, accuracy_epic_kitchens, correct_per_class, log_model_info, gpu_mem_usage
 from utils.logger import setup_logger
 
 from pathlib import Path
@@ -45,7 +45,13 @@ class VideoCLIP(nn.Module):
         self.fusion_model = fusion_model
         self.n_seg = config.data.num_segments
         self.drop_out = nn.Dropout(p=config.network.drop_fc)
-        self.fc = nn.Linear(config.network.n_emb, config.data.num_classes)
+        # multiple classifier for EPIC-KITCHENS-100
+        self.is_epic_kitchens = "epic-kitchens" in config.data.dataset
+        if self.is_epic_kitchens:
+            self.fc_verb = nn.Linear(config.network.n_emb, config.data.num_classes[0])
+            self.fc_noun = nn.Linear(config.network.n_emb, config.data.num_classes[1])
+        else:
+            self.fc = nn.Linear(config.network.n_emb, config.data.num_classes)
 
     def forward(self, image):
         bt = image.size(0)
@@ -56,8 +62,13 @@ class VideoCLIP(nn.Module):
             image_emb = self.fusion_model(image_emb)
 
         image_emb = self.drop_out(image_emb)
-        logit = self.fc(image_emb)
-        return logit
+        if self.is_epic_kitchens:
+            logit_verb = self.fc_verb(image_emb)
+            logit_noun = self.fc_noun(image_emb)
+            return (logit_verb, logit_noun)
+        else:
+            logit = self.fc(image_emb)
+            return logit
 
 def epoch_saving(epoch, model, optimizer, filename):
     torch.save({
@@ -159,6 +170,8 @@ def main(args):
         from datasets.diving48 import Video_dataset
     elif 'finegym' in config.data.dataset:
         from datasets.finegym import Video_dataset
+    elif 'epic-kitchens-100' in config.data.dataset:
+        from datasets.epic_kitchen import Video_dataset
     else:
         from datasets.kinetics import Video_dataset
 
@@ -338,19 +351,12 @@ def main(args):
         from timm.loss import SoftTargetCrossEntropy
         criterion = SoftTargetCrossEntropy()     
         # smoothing is handled with mixup label transform
+        # Note: Mixup is not supported for EPIC-KITCHENS-100 dataset
         from utils.mixup import Mixup
         mixup_fn = Mixup(
             mixup_alpha=0.8, cutmix_alpha=1.0, cutmix_minmax=None,
             prob=1.0, switch_prob=0.5, mode='batch',
             label_smoothing=0.1, num_classes=config.data.num_classes)
-        #   
-        # from utils.mixup_old import CutmixMixupBlending
-        # mixup_fn = CutmixMixupBlending(num_classes=config.data.num_classes, 
-        #                                smoothing=0.1, 
-        #                                mixup_alpha=0.8, 
-        #                                cutmix_alpha=1.0, 
-        #                                switch_prob=0.5)   
-
     elif config.solver.smoothing:
         logger.info("=> Using label smoothing: 0.1")
         from timm.loss import LabelSmoothingCrossEntropy
@@ -367,10 +373,15 @@ def main(args):
             checkpoint = torch.load(config.pretrain, map_location='cpu')
             state_dict = checkpoint['model_state_dict']
             state_dict = update_dict(state_dict)
-            if state_dict['fc.weight'].size(0) != config.data.num_classes:
+            if "epic-kitchens" in config.data.dataset:
                 state_dict.pop('fc.weight')
                 state_dict.pop('fc.bias')
                 logger.info('=> pop last fc layer')
+            else:
+                if state_dict['fc.weight'].size(0) != config.data.num_classes:
+                    state_dict.pop('fc.weight')
+                    state_dict.pop('fc.bias')
+                    logger.info('=> pop last fc layer')
             model_onehot.load_state_dict(state_dict, strict=False)
             del checkpoint
         else:
@@ -436,7 +447,6 @@ def main(args):
         return
 
 
-
     for epoch in range(start_epoch, config.solver.epochs):
         if args.distributed:
             train_loader.sampler.set_epoch(epoch)        
@@ -463,95 +473,211 @@ def main(args):
 def train(model, train_loader, optimizer, criterion, scaler,
           epoch, device, lr_scheduler, config, mixup_fn, logger):
     """ train a epoch """
+    # Initialize meters
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
-    top1 = AverageMeter()
-    top5 = AverageMeter()
 
-    model.train()
-    autocast = torch.cuda.amp.autocast if args.precision == 'amp' else suppress
-    end = time.time()
-    for i,(images, list_id) in enumerate(train_loader):
-        data_time.update(time.time() - end)
-        images = images.view((-1,config.data.num_segments,3)+images.size()[-2:])
+    if 'epic-kitchens' in config.data.dataset: # Epic-Kitchens
+        # Initialize accuracy meters
+        action_top1 = AverageMeter()
+        action_top5 = AverageMeter()
+        verb_top1 = AverageMeter()
+        verb_top5 = AverageMeter()
+        noun_top1 = AverageMeter()
+        noun_top5 = AverageMeter()
 
-        if mixup_fn is not None:
-            images = images.transpose(1, 2)  # b t c h w -> b c t h w
-            images, list_id = mixup_fn(images, list_id)
-            images = images.transpose(1, 2)
+        model.train()
+        autocast = torch.cuda.amp.autocast if args.precision == 'amp' else suppress
+        end = time.time()
 
-        list_id = list_id.to(device)
-        b,t,c,h,w = images.size()
-        images= images.view(-1,c,h,w) # omit the Image.fromarray if the images already in PIL format, change this line to images=list_image if using preprocess inside the dataset class
-    
-        if (i + 1) % config.solver.grad_accumulation_steps != 0:
-            with model.no_sync():
+        for i,(images, list_id) in enumerate(train_loader):
+            if i > 10:
+                break
+            data_time.update(time.time() - end)
+            images = images.view((-1,config.data.num_segments,3)+images.size()[-2:])
+
+            # No mixup for Epic-Kitchens
+            # if mixup_fn is not None:
+            #     images = images.transpose(1, 2)  # b t c h w -> b c t h w
+            #     images, list_id = mixup_fn(images, list_id)
+            #     images = images.transpose(1, 2)
+
+            # Handle Epic-Kitchens labels
+            verb_id, noun_id = list_id['verb'], list_id['noun']
+            verb_id = verb_id.to(device)
+            noun_id = noun_id.to(device)
+
+            b,t,c,h,w = images.size()
+            images= images.view(-1,c,h,w)
+
+            if (i + 1) % config.solver.grad_accumulation_steps != 0:
+                with model.no_sync():
+                    with autocast():
+                        logits = model(images)
+                        loss_verb = criterion(logits[0], verb_id)
+                        loss_noun = criterion(logits[1], noun_id)
+                        loss = loss_verb + loss_noun
+                        # loss regularization
+                        loss = loss / config.solver.grad_accumulation_steps    
+                    if scaler is not None:
+                        # back propagation
+                        scaler.scale(loss).backward()
+                    else:
+                        loss.backward()
+            else:
                 with autocast():
                     logits = model(images)
-                    loss = criterion(logits, list_id)
-
+                    loss_verb = criterion(logits[0], verb_id)
+                    loss_noun = criterion(logits[1], noun_id)
+                    loss = loss_verb + loss_noun
                     # loss regularization
-                    loss = loss / config.solver.grad_accumulation_steps    
+                    loss = loss / config.solver.grad_accumulation_steps            
+
                 if scaler is not None:
                     # back propagation
                     scaler.scale(loss).backward()
+                    scaler.step(optimizer)  
+                    scaler.update()  
+                    optimizer.zero_grad()  # reset gradient
                 else:
+                    # back propagation
                     loss.backward()
-        else:
-            with autocast():
-                logits = model(images)
-                loss = criterion(logits, list_id)
+                    optimizer.step()  # update param
+                    optimizer.zero_grad()  # reset gradient
 
-                # loss regularization
-                loss = loss / config.solver.grad_accumulation_steps            
+            if config.solver.type != 'monitor':
+                if (i + 1) == 1 or (i + 1) % 10 == 0:
+                    lr_scheduler.step(epoch + i / len(train_loader))
 
-            if scaler is not None:
-                # back propagation
-                scaler.scale(loss).backward()
+            # Calculate accuracy and update meters
+            action_prec, verb_prec, noun_prec = accuracy_epic_kitchens(
+                logits[0], logits[1], verb_id, noun_id, topk=(1, 5))
+            action_top1.update(action_prec[0].item(), logits[0].size(0))
+            action_top5.update(action_prec[1].item(), logits[0].size(0))
+            verb_top1.update(verb_prec[0].item(), logits[0].size(0))
+            verb_top5.update(verb_prec[1].item(), logits[0].size(0))
+            noun_top1.update(noun_prec[0].item(), logits[1].size(0))
+            noun_top5.update(noun_prec[1].item(), logits[1].size(0))
+            losses.update(loss.item(), logits[0].size(0))
 
-                scaler.step(optimizer)  
-                scaler.update()  
-                optimizer.zero_grad()  # reset gradient
-                    
+            batch_time.update(time.time() - end)
+            end = time.time()                
+
+            # logging
+            cur_iter = epoch * len(train_loader) +  i
+            max_iter = config.solver.epochs * len(train_loader)
+            eta_sec = batch_time.avg * (max_iter - cur_iter + 1)
+            eta_sec = str(datetime.timedelta(seconds=int(eta_sec)))
+            if i % config.logging.print_freq == 0:
+                logger.info(('Epoch: [{0}][{1}/{2}], lr: {lr:.2e}, eta: {3}\t'
+                        'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                        'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
+                        'Mem {mem_usage:.2f}GB\t'
+                        'Action Prec@1 {action_top1.val:.3f} ({action_top1.avg:.3f})\t'
+                        'Verb Prec@1 {verb_top1.val:.3f} ({verb_top1.avg:.3f})\t'
+                        'Noun Prec@1 {noun_top1.val:.3f} ({noun_top1.avg:.3f})\t'
+                        'Loss {loss.val:.4f} ({loss.avg:.4f})'.format(
+                    epoch, i, len(train_loader), eta_sec, batch_time=batch_time,
+                    data_time=data_time, mem_usage=gpu_mem_usage(),
+                    action_top1=action_top1, verb_top1=verb_top1, noun_top1=noun_top1,
+                    loss=losses, lr=optimizer.param_groups[-1]['lr'])))
+                if dist.get_rank() == 0 and config.wandb.use_wandb and not args.debug:
+                    wandb.log({"train/loss": losses.avg,
+                        "train/top1_action": action_top1.avg,
+                        "train/top5_action": action_top5.avg,
+                        "train/top1_verb": verb_top1.avg,
+                        "train/top5_verb": verb_top5.avg,
+                        "train/top1_noun": noun_top1.avg,
+                        "train/top5_noun": noun_top5.avg,
+                        "train/lr": optimizer.param_groups[-1]['lr']},
+                        step=cur_iter)
+
+    else: #regular datasets
+        # Initialize meters
+        top1 = AverageMeter()
+        top5 = AverageMeter()
+    
+        model.train()
+        autocast = torch.cuda.amp.autocast if args.precision == 'amp' else suppress
+        end = time.time()
+
+
+        for i,(images, list_id) in enumerate(train_loader):
+            data_time.update(time.time() - end)
+            images = images.view((-1,config.data.num_segments,3)+images.size()[-2:])
+
+            if mixup_fn is not None:
+                images = images.transpose(1, 2)  # b t c h w -> b c t h w
+                images, list_id = mixup_fn(images, list_id)
+                images = images.transpose(1, 2)
+
+            list_id = list_id.to(device)
+
+            b,t,c,h,w = images.size()
+            images= images.view(-1,c,h,w)
+    
+            if (i + 1) % config.solver.grad_accumulation_steps != 0:
+                with model.no_sync():
+                    with autocast():
+                        logits = model(images)
+                        loss = criterion(logits, list_id)
+                        # loss regularization
+                        loss = loss / config.solver.grad_accumulation_steps    
+                    if scaler is not None:
+                        # back propagation
+                        scaler.scale(loss).backward()
+                    else:
+                        loss.backward()
             else:
-                # back propagation
-                loss.backward()
-                optimizer.step()  # update param
-                optimizer.zero_grad()  # reset gradient
+                with autocast():
+                    logits = model(images)
+                    loss = criterion(logits, list_id)
+                    # loss regularization
+                    loss = loss / config.solver.grad_accumulation_steps            
 
-        if config.solver.type != 'monitor':
-            if (i + 1) == 1 or (i + 1) % 10 == 0:
-                lr_scheduler.step(epoch + i / len(train_loader))
+                if scaler is not None:
+                    # back propagation
+                    scaler.scale(loss).backward()
+                    scaler.step(optimizer)  
+                    scaler.update()  
+                    optimizer.zero_grad()  # reset gradient
+                else:
+                    # back propagation
+                    loss.backward()
+                    optimizer.step()  # update param
+                    optimizer.zero_grad()  # reset gradient
+
+            if config.solver.type != 'monitor':
+                if (i + 1) == 1 or (i + 1) % 10 == 0:
+                    lr_scheduler.step(epoch + i / len(train_loader))
         
+            # Calculate accuracy and update meters
+            prec1, prec5 = accuracy(logits, list_id, topk=(1, 5))
+            top1.update(prec1.item(), logits.size(0))
+            top5.update(prec5.item(), logits.size(0))
+            losses.update(loss.item(), logits.size(0))
 
-        prec1, prec5 = accuracy(logits, list_id, topk=(1, 5))
-        top1.update(prec1.item(), logits.size(0))
-        top5.update(prec5.item(), logits.size(0))
-        losses.update(loss.item(), logits.size(0))
+            batch_time.update(time.time() - end)
+            end = time.time()                
 
-
-        batch_time.update(time.time() - end)
-        end = time.time()                
-
-
-        cur_iter = epoch * len(train_loader) +  i
-        max_iter = config.solver.epochs * len(train_loader)
-        eta_sec = batch_time.avg * (max_iter - cur_iter + 1)
-        eta_sec = str(datetime.timedelta(seconds=int(eta_sec)))        
-
-        if i % config.logging.print_freq == 0:
-            logger.info(('Epoch: [{0}][{1}/{2}], lr: {lr:.2e}, eta: {3}\t'
-                         'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                         'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
-                         'Mem {mem_usage:.2f}GB\t'
-                         'Prec@1 {top1.val:.3f} ({top1.avg:.3f})\t'
-                         'Loss {loss.val:.4f} ({loss.avg:.4f})'.format(
-                             epoch, i, len(train_loader), eta_sec, batch_time=batch_time, data_time=data_time, mem_usage=gpu_mem_usage(),
-                             top1=top1,
-                             loss=losses, lr=optimizer.param_groups[-1]['lr'])))  # TODO
-            if dist.get_rank() == 0 and config.wandb.use_wandb and not args.debug:
-                wandb.log({"train/loss": losses.avg,
+            # logging
+            cur_iter = epoch * len(train_loader) +  i
+            max_iter = config.solver.epochs * len(train_loader)
+            eta_sec = batch_time.avg * (max_iter - cur_iter + 1)
+            eta_sec = str(datetime.timedelta(seconds=int(eta_sec)))
+            if i % config.logging.print_freq == 0:
+                logger.info(('Epoch: [{0}][{1}/{2}], lr: {lr:.2e}, eta: {3}\t'
+                        'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                        'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
+                        'Mem {mem_usage:.2f}GB\t'
+                        'Prec@1 {top1.val:.3f} ({top1.avg:.3f})\t'
+                        'Loss {loss.val:.4f} ({loss.avg:.4f})'.format(
+                            epoch, i, len(train_loader), eta_sec, batch_time=batch_time, data_time=data_time, mem_usage=gpu_mem_usage(),
+                            top1=top1,
+                            loss=losses, lr=optimizer.param_groups[-1]['lr'])))  # TODO
+                if dist.get_rank() == 0 and config.wandb.use_wandb and not args.debug:
+                    wandb.log({"train/loss": losses.avg,
                         "train/top1": top1.avg,
                         "train/top5": top5.avg,
                         "train/lr": optimizer.param_groups[-1]['lr']},
@@ -560,64 +686,180 @@ def train(model, train_loader, optimizer, criterion, scaler,
 
 
 def validate(epoch, val_loader, device, model, config, logger, cur_iter=0):
-    top1 = AverageMeter()
-    top5 = AverageMeter()
-    top1_per_class = ListMeter(config.data.num_classes)
-    top5_per_class = ListMeter(config.data.num_classes)
-    model.eval()
-    with torch.no_grad():
-        for i, (image, class_id) in enumerate(val_loader):
-            image = image.view((-1, config.data.num_segments, 3) + image.size()[-2:])
-            b, t, c, h, w = image.size()
-            class_id = class_id.to(device)
-            image_input = image.to(device).view(-1, c, h, w)
-            logits = model(image_input)  # B 400
-
-            # topk accuracy
-            prec = accuracy(logits, class_id, topk=(1, 5))
-            prec1 = reduce_tensor(prec[0])
-            prec5 = reduce_tensor(prec[1])
-
-            top1.update(prec1.item(), class_id.size(0))
-            top5.update(prec5.item(), class_id.size(0))
-
-            # topk accuracy per class
-            if config.logging.acc_per_class:
-                correct_k, count = correct_per_class(logits, class_id, topk=(1, 5))
-                correct_1_per_class = reduce_tensor(correct_k[0], average=False)
-                correct_5_per_class = reduce_tensor(correct_k[1], average=False)
-                count_per_class = reduce_tensor(count, average=False)
-
-                top1_per_class.update(correct_1_per_class.cpu(), count_per_class.cpu())
-                top5_per_class.update(correct_5_per_class.cpu(), count_per_class.cpu())
-
-            if i % config.logging.print_freq == 0:
-                base_log = ('Test: [{0}/{1}]\t'
-                            'Prec@1 {top1.val:.3f} ({top1.avg:.3f})\t'
-                            'Prec@5 {top5.val:.3f} ({top5.avg:.3f})'.format(
-                        i, len(val_loader), top1=top1, top5=top5))
-                if config.logging.acc_per_class:
-                    extra_log = ('\tmPrec@1 ({:.3f})\tmPrec@5 ({:.3f})'.format(top1_per_class.mean(), top5_per_class.mean()))
-                else:
-                    extra_log = ''
-                logger.info(base_log + extra_log)
-    base_log = 'Overall Prec@1 {:.03f}% Prec@5 {:.03f}%'.format(top1.avg, top5.avg)
-    if config.logging.acc_per_class:
-        extra_log = ' mPrec@1 ({:.03f}) mPrec@5 ({:.03f})'.format(top1_per_class.mean(), top5_per_class.mean())
-    else:
-        extra_log = ''
-    logger.info(base_log + extra_log)
-    if dist.get_rank() == 0 and config.wandb.use_wandb and not args.debug:
-        base_log = {"val/top1": top1.avg, "val/top5": top5.avg}
+    if 'epic-kitchens' in config.data.dataset :
+        # Initialize meters
+        action_top1 = AverageMeter()
+        action_top5 = AverageMeter()
+        verb_top1 = AverageMeter()
+        verb_top5 = AverageMeter()
+        noun_top1 = AverageMeter()
+        noun_top5 = AverageMeter()
         if config.logging.acc_per_class:
-            extra_log = {"val/mtop1": top1_per_class.mean(), "val/mtop5": top5_per_class.mean()}
-            base_log.update(extra_log)
-        wandb.log(base_log, step=cur_iter)
+            verb_top1_per_class = ListMeter(config.data.num_classes[0])
+            verb_top5_per_class = ListMeter(config.data.num_classes[0])
+            noun_top1_per_class = ListMeter(config.data.num_classes[1])
+            noun_top5_per_class = ListMeter(config.data.num_classes[1])
+        
+        model.eval()
+        with torch.no_grad():
+            for i, (image, class_id) in enumerate(val_loader):
+                if i > 10:
+                    break
+                image = image.view((-1, config.data.num_segments, 3) + image.size()[-2:])
+                b, t, c, h, w = image.size()
+                # Class ids
+                verb_id, noun_id = class_id['verb'], class_id['noun']
+                verb_id = verb_id.to(device)
+                noun_id = noun_id.to(device)
+                # forward pass
+                image_input = image.to(device).view(-1, c, h, w)
+                logits = model(image_input)
+                # topk accuracy for verb, noun, and action
+                action_prec, verb_prec, noun_prec = accuracy_epic_kitchens(
+                    logits[0], logits[1], verb_id, noun_id, topk=(1, 5))
+                # reduce tensor
+                action_prec1 = reduce_tensor(action_prec[0])
+                action_prec5 = reduce_tensor(action_prec[1])
+                verb_prec1 = reduce_tensor(verb_prec[0])
+                verb_prec5 = reduce_tensor(verb_prec[1])
+                noun_prec1 = reduce_tensor(noun_prec[0])
+                noun_prec5 = reduce_tensor(noun_prec[1])
+                # update meters
+                action_top1.update(action_prec1.item(), verb_id.size(0))
+                action_top5.update(action_prec5.item(), verb_id.size(0))
+                verb_top1.update(verb_prec1.item(), verb_id.size(0))
+                verb_top5.update(verb_prec5.item(), verb_id.size(0))
+                noun_top1.update(noun_prec1.item(), noun_id.size(0))
+                noun_top5.update(noun_prec5.item(), noun_id.size(0))
+                # topk accuracy per class
+                if config.logging.acc_per_class:
+                    verb_correct_k, verb_count = correct_per_class(logits[0], verb_id, topk=(1, 5))
+                    noun_correct_k, noun_count = correct_per_class(logits[1], noun_id, topk=(1, 5))
+                    
+                    verb_correct_1 = reduce_tensor(verb_correct_k[0], average=False)
+                    verb_correct_5 = reduce_tensor(verb_correct_k[1], average=False)
+                    verb_count = reduce_tensor(verb_count, average=False)
+                    
+                    noun_correct_1 = reduce_tensor(noun_correct_k[0], average=False)
+                    noun_correct_5 = reduce_tensor(noun_correct_k[1], average=False)
+                    noun_count = reduce_tensor(noun_count, average=False)
+                    
+                    verb_top1_per_class.update(verb_correct_1.cpu(), verb_count.cpu())
+                    verb_top5_per_class.update(verb_correct_5.cpu(), verb_count.cpu())
+                    noun_top1_per_class.update(noun_correct_1.cpu(), noun_count.cpu())
+                    noun_top5_per_class.update(noun_correct_5.cpu(), noun_count.cpu())
+                # logging for inner loop
+                if i % config.logging.print_freq == 0:
+                    base_log = ('Test: [{0}/{1}]\t'
+                                'Action Prec@1 {action_top1.val:.3f} ({action_top1.avg:.3f})\t'
+                                'Verb Prec@1 {verb_top1.val:.3f} ({verb_top1.avg:.3f})\t'
+                                'Noun Prec@1 {noun_top1.val:.3f} ({noun_top1.avg:.3f})'.format(
+                        i, len(val_loader), action_top1=action_top1, verb_top1=verb_top1, noun_top1=noun_top1))
+                    if config.logging.acc_per_class:
+                        extra_log = ('\tVerb mPrec@1 ({:.3f})\tNoun mPrec@1 ({:.3f})'.format(
+                            verb_top1_per_class.mean(), noun_top1_per_class.mean()))
+                    else:
+                        extra_log = ''
+                    logger.info(base_log + extra_log)
+        # logging for outer loop
+        base_log = ('Overall '
+                    'Action Prec@1 {:.3f} Action Prec@5 {:.3f} '
+                    'Verb Prec@1 {:.3f} Verb Prec@5 {:.3f} '
+                    'Noun Prec@1 {:.3f} Noun Prec@5 {:.3f}'.format(
+                    action_top1.avg, action_top5.avg,
+                    verb_top1.avg, verb_top5.avg,
+                    noun_top1.avg, noun_top5.avg))
+        if config.logging.acc_per_class:
+            extra_log = (' Verb mPrec@1 ({:.03f}) Verb mPrec@5 ({:.03f})'
+                        ' Noun mPrec@1 ({:.03f}) Noun mPrec@5 ({:.03f})'.format(
+                        verb_top1_per_class.mean(), verb_top5_per_class.mean(),
+                        noun_top1_per_class.mean(), noun_top5_per_class.mean()))
+        else:
+            extra_log = ''
+        logger.info(base_log + extra_log)
+        if dist.get_rank() == 0 and config.wandb.use_wandb and not args.debug:
+            base_log = {
+                "val/action_top1": action_top1.avg,
+                "val/action_top5": action_top5.avg,
+                "val/verb_top1": verb_top1.avg,
+                "val/verb_top5": verb_top5.avg,
+                "val/noun_top1": noun_top1.avg,
+                "val/noun_top5": noun_top5.avg
+            }
+            if config.logging.acc_per_class:
+                extra_log = {
+                    "val/mverb_top1": verb_top1_per_class.mean(),
+                    "val/mnoun_top1": noun_top1_per_class.mean()
+                }
+                base_log.update(extra_log)
+            wandb.log(base_log, step=cur_iter)
+
+        return action_top1.avg
+
+    else: # regular datasets
+        # Initialize meters
+        top1 = AverageMeter()
+        top5 = AverageMeter()
     
-    if 'finegym' in config.data.dataset:
-        return top1_per_class.mean()
-    else:
-        return top1.avg
+        if config.logging.acc_per_class:
+            top1_per_class = ListMeter(config.data.num_classes)
+            top5_per_class = ListMeter(config.data.num_classes)
+    
+        model.eval()
+        with torch.no_grad():
+            for i, (image, class_id) in enumerate(val_loader):
+                image = image.view((-1, config.data.num_segments, 3) + image.size()[-2:])
+                b, t, c, h, w = image.size()
+                # Class ids
+                class_id = class_id.to(device)
+                # forward pass
+                image_input = image.to(device).view(-1, c, h, w)
+                logits = model(image_input)
+                # topk accuracy
+                prec = accuracy(logits, class_id, topk=(1, 5))
+                prec1 = reduce_tensor(prec[0])
+                prec5 = reduce_tensor(prec[1])
+                # update meters
+                top1.update(prec1.item(), class_id.size(0))
+                top5.update(prec5.item(), class_id.size(0))
+                # topk accuracy per class
+                if config.logging.acc_per_class:
+                    correct_k, count = correct_per_class(logits, class_id, topk=(1, 5))
+                    correct_1_per_class = reduce_tensor(correct_k[0], average=False)
+                    correct_5_per_class = reduce_tensor(correct_k[1], average=False)
+                    count_per_class = reduce_tensor(count, average=False)
+
+                    top1_per_class.update(correct_1_per_class.cpu(), count_per_class.cpu())
+                    top5_per_class.update(correct_5_per_class.cpu(), count_per_class.cpu())
+                # logging for inner loop
+                if i % config.logging.print_freq == 0:
+                    base_log = ('Test: [{0}/{1}]\t'
+                                'Prec@1 {top1.val:.3f} ({top1.avg:.3f})\t'
+                                'Prec@5 {top5.val:.3f} ({top5.avg:.3f})'.format(
+                            i, len(val_loader), top1=top1, top5=top5))
+                    if config.logging.acc_per_class:
+                        extra_log = ('\tmPrec@1 ({:.3f})\tmPrec@5 ({:.3f})'.format(top1_per_class.mean(), top5_per_class.mean()))
+                    else:
+                        extra_log = ''
+                    logger.info(base_log + extra_log)
+        # logging for outer loop
+        base_log = 'Overall Prec@1 {:.03f}% Prec@5 {:.03f}%'.format(top1.avg, top5.avg)
+        if config.logging.acc_per_class:
+            extra_log = ' mPrec@1 ({:.03f}) mPrec@5 ({:.03f})'.format(top1_per_class.mean(), top5_per_class.mean())
+        else:
+            extra_log = ''
+        logger.info(base_log + extra_log)
+        if dist.get_rank() == 0 and config.wandb.use_wandb and not args.debug:
+            base_log = {"val/top1": top1.avg, "val/top5": top5.avg}
+            if config.logging.acc_per_class:
+                extra_log = {"val/mtop1": top1_per_class.mean(), "val/mtop5": top5_per_class.mean()}
+            base_log.update(extra_log)
+            wandb.log(base_log, step=cur_iter)
+    
+        if 'finegym' in config.data.dataset:
+            return top1_per_class.mean()
+        else:
+            return top1.avg
 
 
 if __name__ == '__main__':

@@ -10,7 +10,7 @@ import torch.distributed as dist
 import torch.backends.cudnn as cudnn
 import torchvision
 import time
-from utils.utils import init_distributed_mode, AverageMeter, ListMeter, reduce_tensor, accuracy, correct_per_class, accuracy_per_sample, log_model_info, ddp_all_gather
+from utils.utils import init_distributed_mode, AverageMeter, ListMeter, reduce_tensor, accuracy, accuracy_epic_kitchens, correct_per_class, accuracy_per_sample, accuracy_per_sample_epic_kitchens, log_model_info, ddp_all_gather
 from utils.logger import setup_logger
 
 import yaml
@@ -32,7 +32,13 @@ class VideoCLIP(nn.Module):
         self.fusion_model = fusion_model
         self.n_seg = config.data.num_segments
         self.drop_out = nn.Dropout(p=config.network.drop_fc)
-        self.fc = nn.Linear(config.network.n_emb, config.data.num_classes)
+        # multiple classifier for EPIC-KITCHENS-100
+        self.is_epic_kitchens = "epic-kitchens" in config.data.dataset
+        if self.is_epic_kitchens:
+            self.fc_verb = nn.Linear(config.network.n_emb, config.data.num_classes[0])
+            self.fc_noun = nn.Linear(config.network.n_emb, config.data.num_classes[1])
+        else:
+            self.fc = nn.Linear(config.network.n_emb, config.data.num_classes)
 
     def forward(self, image):
         bt = image.size(0)
@@ -43,8 +49,13 @@ class VideoCLIP(nn.Module):
             image_emb = self.fusion_model(image_emb)
 
         image_emb = self.drop_out(image_emb)
-        logit = self.fc(image_emb)
-        return logit
+        if self.is_epic_kitchens:
+            logit_verb = self.fc_verb(image_emb)
+            logit_noun = self.fc_noun(image_emb)
+            return (logit_verb, logit_noun)
+        else:
+            logit = self.fc(image_emb)
+            return logit
 
 def get_parser():
     parser = argparse.ArgumentParser()
@@ -113,18 +124,18 @@ def main(args):
 
     with open(args.config, 'r') as f:
         config = yaml.load(f, Loader=yaml.FullLoader)
+    config = DotMap(config)
 
-
-    if 'something' in config['data']['dataset']:
+    if 'something' in config.data.dataset:
         from datasets.sth import Video_dataset
-    elif 'diving' in config['data']['dataset']:
+    elif 'diving' in config.data.dataset:
         from datasets.diving48 import Video_dataset
-    elif 'finegym' in config['data']['dataset']:
+    elif 'finegym' in config.data.dataset:
         from datasets.finegym import Video_dataset
+    elif 'epic-kitchens-100' in config.data.dataset:
+        from datasets.epic_kitchen import Video_dataset
     else:
         from datasets.kinetics import Video_dataset
-
-    config = DotMap(config)
 
     # set up working directory
     working_dir = "/".join(args.weights.split('/')[:-1])
@@ -269,10 +280,7 @@ def main(args):
     val_sampler = torch.utils.data.distributed.DistributedSampler(val_data, shuffle=False)
     val_loader = DataLoader(val_data,
         batch_size=config.data.test_batch_size,num_workers=config.data.workers,
-        sampler=val_sampler, pin_memory=True, drop_last=False)
-
-
-    
+        sampler=val_sampler, pin_memory=True, drop_last=False)    
 
     if os.path.isfile(args.weights):
         checkpoint = torch.load(args.weights, map_location='cpu')
@@ -291,6 +299,21 @@ def main(args):
     
     # Save per-class accuracies
     if config.logging.acc_per_class:
+        if 'epic-kitchens' in config.data.dataset:
+            # Save per-class accuracies to file
+            save_vpath = os.path.join(working_dir, 'per_class_accuracies_verb.txt')
+            save_npath = os.path.join(working_dir, 'per_class_accuracies_noun.txt')
+            with open(save_vpath, 'w') as f:
+                f.write('Class\tTop1\tTop5\n')
+                for i in range(len(top1_per_class[0])):
+                    f.write(f'{i}\t{top1_per_class[0][i]:.2f}\t{top5_per_class[0][i]:.2f}\n')
+            logger.info(f'Per-class accuracies saved to {save_vpath}')
+            with open(save_npath, 'w') as f:
+                f.write('Class\tTop1\tTop5\n')
+                for i in range(len(top1_per_class[1])):
+                    f.write(f'{i}\t{top1_per_class[1][i]:.2f}\t{top5_per_class[1][i]:.2f}\n')
+            logger.info(f'Per-class accuracies saved to {save_npath}')
+        else:
             # Save per-class accuracies to file
             save_path = os.path.join(working_dir, 'per_class_accuracies.txt')
             with open(save_path, 'w') as f:
@@ -301,117 +324,294 @@ def main(args):
     
     # Save per-sample results
     if config.logging.correct_per_sample and per_sample_results is not None:
-        correct_list, class_list = per_sample_results
-        save_path = os.path.join(working_dir, 'per_sample_results.txt')
-        with open(save_path, 'w') as f:
-            f.write('Correct\tClass\n')
-            for correct, class_idx in zip(correct_list, class_list):
-                f.write(f'{int(correct)}\t{class_idx}\n')
-        logger.info(f'Per-sample results saved to {save_path}')
+        if 'epic-kitchens' in config.data.dataset:
+            correct_list, class_list = per_sample_results
+            action_correct, verb_correct, noun_correct = correct_list
+            action_classes, verb_classes, noun_classes = class_list
+            save_acpath = os.path.join(working_dir, 'per_sample_results_action.txt')
+            save_vcpath = os.path.join(working_dir, 'per_sample_results_verb.txt')
+            save_ncpath = os.path.join(working_dir, 'per_sample_results_noun.txt')
+            with open(save_acpath, 'w') as f:
+                f.write('Correct\tClass\n')
+                for correct, verb_class_idx, noun_class_idx in zip(action_correct, action_classes[0], action_classes[1]):
+                    f.write(f'{int(correct)}\t{verb_class_idx},{noun_class_idx}\n')
+            logger.info(f'Per-sample results saved to {save_acpath}')
+            with open(save_vcpath, 'w') as f:
+                f.write('Correct\tClass\n')
+                for correct, class_idx in zip(verb_correct, verb_classes):
+                    f.write(f'{int(correct)}\t{class_idx}\n')
+            logger.info(f'Per-sample results saved to {save_vcpath}')
+            with open(save_ncpath, 'w') as f:
+                f.write('Correct\tClass\n')
+                for correct, class_idx in zip(noun_correct, noun_classes):
+                    f.write(f'{int(correct)}\t{class_idx}\n')
+            logger.info(f'Per-sample results saved to {save_ncpath}')
+        else:
+            correct_list, class_list = per_sample_results
+            save_path = os.path.join(working_dir, 'per_sample_results.txt')
+            with open(save_path, 'w') as f:
+                f.write('Correct\tClass\n')
+                for correct, class_idx in zip(correct_list, class_list):
+                    f.write(f'{int(correct)}\t{class_idx}\n')
+            logger.info(f'Per-sample results saved to {save_path}')
     return
 
 
 
 def validate(val_loader, device, model, config, test_crops, test_clips, logger=None):
-    top1 = AverageMeter()
-    top5 = AverageMeter()
-    top1_per_class = ListMeter(config.data.num_classes)
-    top5_per_class = ListMeter(config.data.num_classes)
-    model.eval()
-    proc_start_time = time.time()
-
-    # Lists to store per-sample results
-    all_correct = []
-    all_classes = []
-
-    with torch.no_grad():
-        for i, (image, class_id) in enumerate(val_loader):
-            batch_size = class_id.numel()
-            num_crop = test_crops
-
-            num_crop *= test_clips  # 4 clips for testing when using dense sample
-
-            class_id = class_id.to(device)
-            n_seg = config.data.num_segments
-            image = image.view((-1, n_seg, 3) + image.size()[-2:])
-            b, t, c, h, w = image.size()
-            image_input = image.to(device).view(-1, c, h, w)
-
-
-            logits = model(image_input)  # bt n_class
-
-
-            cnt_time = time.time() - proc_start_time
-
-            logits = logits.view(batch_size, -1, logits.size(1)).softmax(dim=-1)
-            logits = logits.mean(dim=1, keepdim=False)      # bs n_class
-
-            # topk accuracy
-            prec = accuracy(logits, class_id, topk=(1, 5))
-            prec1 = reduce_tensor(prec[0])
-            prec5 = reduce_tensor(prec[1])
-
-            top1.update(prec1.item(), class_id.size(0))
-            top5.update(prec5.item(), class_id.size(0))
-
-            # topk accuracy per class
-            if config.logging.acc_per_class:
-                correct_k, count = correct_per_class(logits, class_id, topk=(1, 5))
-                correct_1_per_class = reduce_tensor(correct_k[0], average=False)
-                correct_5_per_class = reduce_tensor(correct_k[1], average=False)
-                count_per_class = reduce_tensor(count, average=False)
-
-                top1_per_class.update(correct_1_per_class.cpu(), count_per_class.cpu())
-                top5_per_class.update(correct_5_per_class.cpu(), count_per_class.cpu())
-
-            # per-sample accuracy
-            if config.logging.correct_per_sample:
-                correct = accuracy_per_sample(logits, class_id)
-                correct = torch.stack(ddp_all_gather(correct), dim=-1).flatten()
-                gathered_classes = torch.stack(ddp_all_gather(class_id), dim=-1).flatten()
-                all_correct.extend(correct.cpu().tolist())
-                all_classes.extend(gathered_classes.cpu().tolist())
-
-            if i % config.logging.print_freq == 0 and dist.get_rank() == 0:
-                runtime = float(cnt_time) / (i + 1) / (batch_size * dist.get_world_size())
-                base_msg = ('Test: [{0}/{1}], average {runtime:.4f} sec/video \t'
-                           'Prec@1 {top1.val:.3f} ({top1.avg:.3f})\t'
-                           'Prec@5 {top5.val:.3f} ({top5.avg:.3f})').format(
-                               i, len(val_loader), runtime=runtime, top1=top1, top5=top5)
-                if True:
-                    top1_per_class_mean = top1_per_class.mean()
-                    top5_per_class_mean = top5_per_class.mean()
-                    base_msg += '\tmPrec@1 {:.3f}\tmPrec@5 {:.3f}'.format(
-                        top1_per_class_mean, top5_per_class_mean)
-                
-                logger.info(base_msg)
-
-    if config.logging.acc_per_class:
-        per_class_results = (top1_per_class.avg, top5_per_class.avg)
-    else:
-        per_class_results = None
-
-    if config.logging.correct_per_sample:
-        per_sample_results = (all_correct, all_classes)
-    else:
-        per_sample_results = None
-
-    if dist.get_rank() == 0:
-        logger.info('-----Evaluation is finished------')
-        base_msg = 'Overall Prec@1 {:.03f}% Prec@5 {:.03f}%'.format(top1.avg, top5.avg)
+    if 'epic-kitchens' in config.data.dataset:
+        # Initialize meters
+        # accuracy meters
+        action_top1 = AverageMeter()
+        action_top5 = AverageMeter()
+        verb_top1 = AverageMeter()
+        verb_top5 = AverageMeter()
+        noun_top1 = AverageMeter()
+        noun_top5 = AverageMeter()
+        # per-class accuracy meters
         if config.logging.acc_per_class:
-            extra_msg = '\tmPrec@1 ({:.3f})\tmPrec@5 ({:.3f})'.format(top1_per_class.mean(), top5_per_class.mean())
-        else:
-            extra_msg = ''
-        logger.info(base_msg + extra_msg)
-        if config.wandb.use_wandb and not args.debug:
-            base_log = {"test/top1": top1.avg, "test/top5": top5.avg}
-            if config.logging.acc_per_class:
-                extra_log = {"test/mtop1": top1_per_class.mean(), "test/mtop5": top5_per_class.mean()}
-                base_log.update(extra_log)
-            wandb.log(base_log, step=0)
+            verb_top1_per_class = ListMeter(config.data.num_classes[0])
+            verb_top5_per_class = ListMeter(config.data.num_classes[0])
+            noun_top1_per_class = ListMeter(config.data.num_classes[1])
+            noun_top5_per_class = ListMeter(config.data.num_classes[1])
+        # per-sample accuracy meters
+        if config.logging.correct_per_sample:
+            action_all_correct = []
+            verb_all_correct = []
+            noun_all_correct = []
+            action_all_classes = [[],[]]
+            verb_all_classes = []
+            noun_all_classes = []
+        
+        model.eval()
+        proc_start_time = time.time()
 
-    return top1.avg, per_class_results, per_sample_results
+        with torch.no_grad():
+            for i, (image, class_id) in enumerate(val_loader):
+                batch_size = class_id['verb'].numel()
+                num_crop = test_crops
+                num_crop *= test_clips  # 4 clips for testing when using dense sample
+
+                # Handle Epic-Kitchens labels
+                verb_id, noun_id = class_id['verb'], class_id['noun']
+                verb_id = verb_id.to(device)
+                noun_id = noun_id.to(device)
+
+                n_seg = config.data.num_segments
+                image = image.view((-1, n_seg, 3) + image.size()[-2:])
+                b, t, c, h, w = image.size()
+                image_input = image.to(device).view(-1, c, h, w)
+
+                logits = model(image_input)  # bt n_class
+                cnt_time = time.time() - proc_start_time
+
+                # Reshape and average predictions
+                logits_verb = logits[0].view(batch_size, -1, logits[0].size(1)).softmax(dim=-1).mean(dim=1, keepdim=False)
+                logits_noun = logits[1].view(batch_size, -1, logits[1].size(1)).softmax(dim=-1).mean(dim=1, keepdim=False)
+                # topk accuracy
+                action_prec, verb_prec, noun_prec = accuracy_epic_kitchens(
+                    logits_verb, logits_noun, verb_id, noun_id, topk=(1, 5))
+                # gather results
+                action_prec1 = reduce_tensor(action_prec[0])
+                action_prec5 = reduce_tensor(action_prec[1])
+                verb_prec1 = reduce_tensor(verb_prec[0])
+                verb_prec5 = reduce_tensor(verb_prec[1])
+                noun_prec1 = reduce_tensor(noun_prec[0])
+                noun_prec5 = reduce_tensor(noun_prec[1])
+                # update meters
+                action_top1.update(action_prec1.item(), verb_id.size(0))
+                action_top5.update(action_prec5.item(), verb_id.size(0))
+                verb_top1.update(verb_prec1.item(), verb_id.size(0))
+                verb_top5.update(verb_prec5.item(), verb_id.size(0))
+                noun_top1.update(noun_prec1.item(), noun_id.size(0))
+                noun_top5.update(noun_prec5.item(), noun_id.size(0))
+                # topk accuracy per class
+                if config.logging.acc_per_class:
+                    verb_correct_k, verb_count = correct_per_class(logits_verb, verb_id, topk=(1, 5))
+                    noun_correct_k, noun_count = correct_per_class(logits_noun, noun_id, topk=(1, 5))
+                    
+                    verb_correct_1_per_class = reduce_tensor(verb_correct_k[0], average=False)
+                    verb_correct_5_per_class = reduce_tensor(verb_correct_k[1], average=False)
+                    verb_count_per_class = reduce_tensor(verb_count, average=False)
+                    
+                    noun_correct_1_per_class = reduce_tensor(noun_correct_k[0], average=False)
+                    noun_correct_5_per_class = reduce_tensor(noun_correct_k[1], average=False)
+                    noun_count_per_class = reduce_tensor(noun_count, average=False)
+                    
+                    verb_top1_per_class.update(verb_correct_1_per_class.cpu(), verb_count_per_class.cpu())
+                    verb_top5_per_class.update(verb_correct_5_per_class.cpu(), verb_count_per_class.cpu())
+                    noun_top1_per_class.update(noun_correct_1_per_class.cpu(), noun_count_per_class.cpu())
+                    noun_top5_per_class.update(noun_correct_5_per_class.cpu(), noun_count_per_class.cpu())
+                # per-sample accuracy
+                if config.logging.correct_per_sample:
+                    action_correct, verb_correct, noun_correct = accuracy_per_sample_epic_kitchens(logits_verb, logits_noun, verb_id, noun_id)
+
+                    action_correct = torch.stack(ddp_all_gather(action_correct), dim=-1).flatten()
+                    verb_correct = torch.stack(ddp_all_gather(verb_correct), dim=-1).flatten()
+                    noun_correct = torch.stack(ddp_all_gather(noun_correct), dim=-1).flatten()
+                    gathered_verb_classes = torch.stack(ddp_all_gather(verb_id), dim=-1).flatten()
+                    gathered_noun_classes = torch.stack(ddp_all_gather(noun_id), dim=-1).flatten()
+
+                    action_all_correct.extend(action_correct.cpu().tolist())
+                    verb_all_correct.extend(verb_correct.cpu().tolist())
+                    noun_all_correct.extend(noun_correct.cpu().tolist())
+                    action_all_classes[0].extend(gathered_verb_classes.cpu().tolist())
+                    action_all_classes[1].extend(gathered_noun_classes.cpu().tolist())
+                    verb_all_classes.extend(gathered_verb_classes.cpu().tolist())
+                    noun_all_classes.extend(gathered_noun_classes.cpu().tolist())
+                # logging for each iteration
+                if i % config.logging.print_freq == 0 and dist.get_rank() == 0:
+                    runtime = float(cnt_time) / (i + 1) / (batch_size * dist.get_world_size())
+                    base_msg = ('Test: [{0}/{1}], average {runtime:.4f} sec/video\t'
+                            'Action Prec@1 {action_top1.val:.3f} ({action_top1.avg:.3f})\t'
+                            'Verb Prec@1 {verb_top1.val:.3f} ({verb_top1.avg:.3f})\t'
+                            'Noun Prec@1 {noun_top1.val:.3f} ({noun_top1.avg:.3f})').format(
+                        i, len(val_loader), runtime=runtime,
+                        action_top1=action_top1, verb_top1=verb_top1, noun_top1=noun_top1)
+                    if config.logging.acc_per_class:
+                        base_msg += ('\tVerb mPrec@1 {:.3f} \tNoun mPrec@1 {:.3f}'.format(verb_top1_per_class.mean(), noun_top1_per_class.mean()))
+                    logger.info(base_msg)
+        
+        if config.logging.acc_per_class:
+            per_class_results = ((verb_top1_per_class.avg, noun_top1_per_class.avg),
+                                 (verb_top5_per_class.avg, noun_top5_per_class.avg))
+        else:
+            per_class_results = None
+
+        if config.logging.correct_per_sample:
+            per_sample_results = ((action_all_correct, verb_all_correct, noun_all_correct), (action_all_classes, verb_all_classes, noun_all_classes))
+        else:
+            per_sample_results = None
+
+        if dist.get_rank() == 0:
+            logger.info('-----Evaluation is finished------')
+            base_msg = ('Overall Action Prec@1 {:.3f} Action Prec@5 {:.3f} '
+                    'Verb Prec@1 {:.3f} Verb Prec@5 {:.3f} '
+                    'Noun Prec@1 {:.3f} Noun Prec@5 {:.3f}'.format(
+                action_top1.avg, action_top5.avg,
+                verb_top1.avg, verb_top5.avg,
+                noun_top1.avg, noun_top5.avg))
+            if config.logging.acc_per_class:
+                extra_msg = ' Verb mPrec@1 ({:.3f}) Noun mPrec@1 ({:.3f})'.format(
+                    verb_top1_per_class.mean(), noun_top1_per_class.mean())
+            else:
+                extra_msg = ''
+            logger.info(base_msg + extra_msg)
+            if config.wandb.use_wandb and not args.debug:
+                base_log = {
+                    "test/action_top1": action_top1.avg,
+                    "test/action_top5": action_top5.avg,
+                    "test/verb_top1": verb_top1.avg,
+                    "test/verb_top5": verb_top5.avg,
+                    "test/noun_top1": noun_top1.avg,
+                    "test/noun_top5": noun_top5.avg
+                }
+                if config.logging.acc_per_class:
+                    extra_log = {
+                        "test/mverb_top1": verb_top1_per_class.mean(),
+                        "test/mnoun_top1": noun_top1_per_class.mean()
+                    }
+                    base_log.update(extra_log)
+                wandb.log(base_log, step=0)
+
+        return action_top1.avg, per_class_results, per_sample_results
+
+    else:
+        # Initialize meters
+        # accuracy meters
+        top1 = AverageMeter()
+        top5 = AverageMeter()
+        # per-class accuracy meters
+        if config.logging.acc_per_class:
+            top1_per_class = ListMeter(config.data.num_classes)
+            top5_per_class = ListMeter(config.data.num_classes)
+        # per-sample accuracy meters
+        if config.logging.correct_per_sample:
+            all_correct = []
+            all_classes = []
+
+        model.eval()
+        proc_start_time = time.time()
+
+        with torch.no_grad():
+            for i, (image, class_id) in enumerate(val_loader):
+                batch_size = class_id.numel()
+                num_crop = test_crops
+                num_crop *= test_clips  # 4 clips for testing when using dense sample
+
+                class_id = class_id.to(device)
+
+                n_seg = config.data.num_segments
+                image = image.view((-1, n_seg, 3) + image.size()[-2:])
+                b, t, c, h, w = image.size()
+                image_input = image.to(device).view(-1, c, h, w)
+
+                logits = model(image_input)  # bt n_class
+                cnt_time = time.time() - proc_start_time
+
+                logits = logits.view(batch_size, -1, logits.size(1)).softmax(dim=-1)
+                logits = logits.mean(dim=1, keepdim=False)      # bs n_class
+                # topk accuracy
+                prec = accuracy(logits, class_id, topk=(1, 5))
+                prec1 = reduce_tensor(prec[0])
+                prec5 = reduce_tensor(prec[1])
+                # update meters
+                top1.update(prec1.item(), class_id.size(0))
+                top5.update(prec5.item(), class_id.size(0))
+                # topk accuracy per class
+                if config.logging.acc_per_class:
+                    correct_k, count = correct_per_class(logits, class_id, topk=(1, 5))
+                    correct_1_per_class = reduce_tensor(correct_k[0], average=False)
+                    correct_5_per_class = reduce_tensor(correct_k[1], average=False)
+                    count_per_class = reduce_tensor(count, average=False)
+
+                    top1_per_class.update(correct_1_per_class.cpu(), count_per_class.cpu())
+                    top5_per_class.update(correct_5_per_class.cpu(), count_per_class.cpu())
+                # per-sample accuracy
+                if config.logging.correct_per_sample:
+                    correct = accuracy_per_sample(logits, class_id)
+                    correct = torch.stack(ddp_all_gather(correct), dim=-1).flatten()
+                    gathered_classes = torch.stack(ddp_all_gather(class_id), dim=-1).flatten()
+                    all_correct.extend(correct.cpu().tolist())
+                    all_classes.extend(gathered_classes.cpu().tolist())
+                # logging for each iteration
+                if i % config.logging.print_freq == 0 and dist.get_rank() == 0:
+                    runtime = float(cnt_time) / (i + 1) / (batch_size * dist.get_world_size())
+                    base_msg = ('Test: [{0}/{1}], average {runtime:.4f} sec/video \t'
+                        'Prec@1 {top1.val:.3f} ({top1.avg:.3f})\t'
+                        'Prec@5 {top5.val:.3f} ({top5.avg:.3f})').format(
+                            i, len(val_loader), runtime=runtime, top1=top1, top5=top5)
+                    if config.logging.acc_per_class:
+                        base_msg += '\tmPrec@1 {:.3f}\tmPrec@5 {:.3f}'.format(
+                            top1_per_class.mean(), top5_per_class.mean())
+                    logger.info(base_msg)
+
+        if config.logging.acc_per_class:
+            per_class_results = (top1_per_class.avg, top5_per_class.avg)
+        else:
+            per_class_results = None
+
+        if config.logging.correct_per_sample:
+            per_sample_results = (all_correct, all_classes)
+        else:
+            per_sample_results = None
+
+        if dist.get_rank() == 0:
+            logger.info('-----Evaluation is finished------')
+            base_msg = 'Overall Prec@1 {:.03f}% Prec@5 {:.03f}%'.format(top1.avg, top5.avg)
+            if config.logging.acc_per_class:
+                extra_msg = '\tmPrec@1 ({:.3f})\tmPrec@5 ({:.3f})'.format(top1_per_class.mean(), top5_per_class.mean())
+            else:
+                extra_msg = ''
+            logger.info(base_msg + extra_msg)
+            if config.wandb.use_wandb and not args.debug:
+                base_log = {"test/top1": top1.avg, "test/top5": top5.avg}
+                if config.logging.acc_per_class:
+                    extra_log = {"test/mtop1": top1_per_class.mean(), "test/mtop5": top5_per_class.mean()}
+                    base_log.update(extra_log)
+                wandb.log(base_log, step=0)
+
+        return top1.avg, per_class_results, per_sample_results
 
 
 

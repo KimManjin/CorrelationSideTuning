@@ -1,0 +1,70 @@
+resume: 
+pretrain: 
+seed: 2048
+data:
+    dataset: epic-kitchens-100
+    modality: RGB
+    num_segments: 8
+    seg_length: 1
+    batch_size: 16
+    test_batch_size: 16
+    workers: 4
+    num_classes: [97, 300]
+    image_tmpl: "frame_{:010d}.jpg"
+    train_root: "/home/mjkim/datasets/epic-kitchens/frames"
+    train_list: "lists/ek100/train_rgb.txt"
+    val_root: "/home/mjkim/datasets/epic-kitchens/frames"
+    val_list: "lists/ek100/val_rgb.txt" #
+    label_list: ["lists/ek100_verb_labels.csv", "lists/ek100_noun_labels.csv"]
+    input_size: 224
+    random_shift: True
+    num_sample: 2
+    rand_aug: False
+    rand_erase: False
+network:
+    arch: ViT-L/14  #ViT-B/32 ViT-B/16
+    init: True
+    tm: False # localuni t1d atm False
+    dropout: 0.0
+    emb_dropout: 0.0
+    type: clip_sth
+    sim_header: None  # Transf   None  
+    joint_st: False
+    drop_fc: 0
+    n_emb: 448
+    side_dim: 448
+    fix_clip: False
+    my_fix_clip: True
+    num_checkpoints: 24
+solver:
+    type: cosine
+    epochs: 30
+    start_epoch: 0
+    epoch_offset: 0
+    optim: adamw
+    lr: 2.e-4
+    warmup_lr: 1.e-7
+    lr_warmup_step: 4
+    final_factor: 0.01
+    betas: [0.9, 0.999]
+    weight_decay: 0.15
+    loss_type: CE
+    evaluate: False
+    clip_ratio: 1
+    grad_accumulation_steps: 1
+    # mixup: True
+    smoothing: 0.1
+    layer_decay: 1.0 # 0.7
+logging:
+    print_freq: 10
+    eval_freq: 2
+    skip_epoch: []
+    acc_per_class: True
+    correct_per_sample: True
+wandb:
+    use_wandb: True
+    entity: mandos
+    key: "5663c183a53a252ec9b39f4816e68bfe70f72107"
+    project_name: "corr_adapter_ek100"
+    exp_name: "default"
+    group_name: None
