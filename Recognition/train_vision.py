@@ -492,8 +492,6 @@ def train(model, train_loader, optimizer, criterion, scaler,
         end = time.time()
 
         for i,(images, list_id) in enumerate(train_loader):
-            if i > 10:
-                break
             data_time.update(time.time() - end)
             images = images.view((-1,config.data.num_segments,3)+images.size()[-2:])
 
@@ -703,8 +701,6 @@ def validate(epoch, val_loader, device, model, config, logger, cur_iter=0):
         model.eval()
         with torch.no_grad():
             for i, (image, class_id) in enumerate(val_loader):
-                if i > 10:
-                    break
                 image = image.view((-1, config.data.num_segments, 3) + image.size()[-2:])
                 b, t, c, h, w = image.size()
                 # Class ids
