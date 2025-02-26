@@ -1,5 +1,5 @@
 resume:
-pretrain: "exp/s4v_selfy_vitb16_16x224_k400_run8/model_best.pt"
+pretrain: "exp/s4v_selfy_vitb16_16x224_k400_run2/model_best.pt"
 seed: 2048
 data:
     dataset: diving48
