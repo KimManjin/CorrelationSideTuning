@@ -1,28 +1,28 @@
 resume:
-pretrain: "exp/s4v_selfy_vitb16_16x224_k400_run2/model_best.pt"
-seed: 2048
+pretrain: 
+seed: 1024
 data:
-    dataset: finegym
+    dataset: diving48
     modality: RGB
     num_segments: 32
     seg_length: 1
-    batch_size: 16
-    test_batch_size: 8
+    batch_size: 10
+    test_batch_size: 3
     workers: 4
-    num_classes: 99
+    num_classes: 288
     image_tmpl: "img_{:05d}.jpg"
     train_root: "/home/mjkim/datasets/finegym"
-    train_list: "lists/finegym/train_gym99_rgb_320px_60fps.txt"
+    train_list: "lists/finegym/train_gym288_rgb_320px_60fps.txt"
     val_root: "/home/mjkim/datasets/finegym"
-    val_list: "lists/finegym/val_gym99_rgb_320px_60fps.txt" #
-    label_list: "lists/finegym99_labels.csv"
+    val_list: "lists/finegym/val_gym288_rgb_320px_60fps.txt" #
+    label_list: "lists/finegym288_labels.csv"
     input_size: 224
     random_shift: True
     num_sample: 1
     rand_aug: False
     rand_erase: False
 network:
-    arch: ViT-B/16  #ViT-B/32 ViT-B/16
+    arch: ViT-L/14  #ViT-B/32 ViT-B/16
     init: True
     tm: False # localuni t1d atm False
     dropout: 0.0
@@ -31,27 +31,21 @@ network:
     sim_header: None  # Transf   None  
     joint_st: False
     drop_fc: 0     
-    n_emb: 320
-    side_dim: 320
-    corr_layer_index: [3]
-    corr_dim: 128
-    corr_func: "cosine" # 'cosine', 'dotproduct_softmax'
-    corr_window: [5, 9, 9]
-    corr_ext_chnls: [64]
-    corr_int_chnls: [64, 64, 128]
-    corr_num_encoders: 2
+    n_emb: 448
+    side_dim: 448
+    corr_layer_index: []
     fix_clip: False 
     my_fix_clip: True
     sync_bn: False
-    num_checkpoints: 0
+    num_checkpoints: 24
 solver:
     type: cosine
     epochs: 30
     start_epoch: 0
     epoch_offset: 0
     optim: adamw
-    lr: 1.e-3
-    warmup_lr: 1.e-6
+    lr: 2.e-4
+    warmup_lr: 2.e-7
     lr_warmup_step: 4
     final_factor: 0.01
     weight_decay: 0.15
@@ -72,6 +66,6 @@ wandb:
     use_wandb: True
     entity: mandos
     key: "5663c183a53a252ec9b39f4816e68bfe70f72107"
-    project_name: "corr_adapter_finegym99"
+    project_name: "corr_adapter_finegym288"
     exp_name: "default"
     group_name: None

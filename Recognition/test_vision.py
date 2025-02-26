@@ -209,6 +209,8 @@ def main(args):
         scale_size = (256, 320) 
     elif 'k400' in config.data.dataset:
         scale_size = 224
+    elif 'finegym' in config.data.dataset:
+        scale_size = 256
     else:
         if args.test_crops == 3:
             scale_size = config.data.input_size
