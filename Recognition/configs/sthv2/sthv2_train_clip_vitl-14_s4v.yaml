@@ -42,8 +42,8 @@ solver:
     start_epoch: 0
     epoch_offset: 0
     optim: adamw
-    lr: 1.e-4
-    warmup_lr: 1.0e-7
+    lr: 2.e-4
+    warmup_lr: 1.e-7
     lr_warmup_step: 4
     betas: [0.9, 0.999] # (0.9, 0.999)
     weight_decay: 0.15
