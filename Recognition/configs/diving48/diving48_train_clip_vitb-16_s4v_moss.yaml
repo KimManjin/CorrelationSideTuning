@@ -18,7 +18,7 @@ data:
     label_list: "lists/diving48_labels.csv"
     input_size: 224
     random_shift: True
-    num_sample: 2
+    num_sample: 1
     rand_aug: False
     rand_erase: False
 network:
