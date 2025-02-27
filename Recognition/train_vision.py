@@ -170,7 +170,7 @@ def main(args):
         from datasets.diving48 import Video_dataset
     elif 'finegym' in config.data.dataset:
         from datasets.finegym import Video_dataset
-    elif 'epic-kitchens-100' in config.data.dataset:
+    elif 'epic-kitchens' in config.data.dataset:
         from datasets.epic_kitchen import Video_dataset
     else:
         from datasets.kinetics import Video_dataset
