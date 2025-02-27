@@ -341,9 +341,9 @@ def accuracy_epic_kitchens(verb_output, noun_output, verb_target, noun_target, t
     noun_topk_acc = []  
     for k in topk:
         # For each k, check if any of the top-k predictions are correct
-        action_correct_k = action_correct[:, :k].reshape(-1).float().sum(0)
-        verb_correct_k = verb_correct[:, :k].reshape(-1).float().sum(0)
-        noun_correct_k = noun_correct[:, :k].reshape(-1).float().sum(0)
+        action_correct_k = action_correct[:k].reshape(-1).float().sum(0)
+        verb_correct_k = verb_correct[:k].reshape(-1).float().sum(0)
+        noun_correct_k = noun_correct[:k].reshape(-1).float().sum(0)
         action_topk_acc.append(action_correct_k.mul_(100.0 / batch_size))
         verb_topk_acc.append(verb_correct_k.mul_(100.0 / batch_size))
         noun_topk_acc.append(noun_correct_k.mul_(100.0 / batch_size))
